@@ -46,26 +46,6 @@
                 <div class="auth-helper">
                     <p>Seu apelido será usado para identificar você durante as festas musicais.</p>
                 </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Name Entry Modal -->
-<div class="modal fade" id="nameModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" style="display: none;">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content modern-modal">
-            <div class="modal-header">
-                <h5 class="modal-title">
-                    <i class="fas fa-music"></i> Bem-vindo ao Torbware Records!
-                </h5>
-            </div>
-            <div class="modal-body">
-                <p class="subtitle">Entre com seu nome para participar das festas musicais sincronizadas.</p>
-                <input type="text" class="form-control modern-input" id="userNameInput" placeholder="Seu nome" required maxlength="20" autocomplete="off">
-                <div class="invalid-feedback">
-                    Por favor, insira um nome válido.
-                </div>
                 
                 <!-- Debug info para mobile -->
                 <div id="debugInfo" class="mt-2 text-muted debug-info" style="display: none;">
@@ -73,32 +53,6 @@
                     <div>Timestamp: <span id="debugTimestamp"></span></div>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-primary modern-btn" id="joinButton">
-                    <i class="fas fa-sign-in-alt"></i>
-                    <span class="btn-text">Entrar na Festa</span>
-                </button>
-                <!-- Botão alternativo para mobile com problemas no modal -->
-                <button type="button" class="btn btn-outline-secondary d-none" id="alternativeJoinButton">
-                    <i class="fas fa-tools"></i> Entrada Alternativa
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Entrada alternativa para casos de problema no modal (mobile) -->
-<div id="alternativeEntry" class="alternative-entry">
-    <div class="card modern-card">
-        <div class="card-body text-center">
-            <h4 class="card-title">
-                <i class="fas fa-music gradient-text"></i> Torbware Records
-            </h4>
-            <p class="mb-3">Digite seu nome para continuar:</p>
-            <input type="text" class="form-control modern-input mb-3" id="alternativeNameInput" placeholder="Seu nome" maxlength="20">
-            <button class="btn btn-primary modern-btn w-100" id="alternativeSubmitButton">
-                <i class="fas fa-sign-in-alt"></i> Entrar na Festa
-            </button>
         </div>
     </div>
 </div>

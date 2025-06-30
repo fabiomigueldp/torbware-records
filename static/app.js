@@ -40,6 +40,9 @@ let currentVolume = 100;
 let isMuted = false;
 let shouldAutoPlay = false;  // Controla reprodução automática após carregamento
 let currentQueue = [];
+let soloQueue = []; // Queue for solo mode (when not in a party)
+let repeatMode = 'off'; // 'off', 'all', 'one'
+let isShuffleActive = false;
 let libraryData = [];
 let filteredLibrary = [];
 let currentTrackId = null;
@@ -50,13 +53,6 @@ let userPlaylists = [];
 let currentTrackToAdd = null;
 
 // --- DOM Elements ---
-let nameModal = null;
-const nameInput = document.getElementById('userNameInput');
-const joinButton = document.getElementById('joinButton');
-const alternativeJoinButton = document.getElementById('alternativeJoinButton');
-const alternativeEntry = document.getElementById('alternativeEntry');
-const alternativeNameInput = document.getElementById('alternativeNameInput');
-const alternativeSubmitButton = document.getElementById('alternativeSubmitButton');
 
 // Player Elements
 const player = document.getElementById('player');
@@ -333,7 +329,7 @@ function handlePartySync(party) {
     } else if (party.mode === 'democratic') {
         console.log('🗳️ DEMOCRATIC MODE: Aplicando sync democrático');
         
-        // Em modo democrático, todos sincronam, mas com proteção para ações recentes
+        // Em modo democrático, todos sincronizam, mas com proteção para ações recentes
         const timeSinceAction = Date.now() - lastPlayerAction;
         const hasRecentAction = timeSinceAction < 2000;
         
@@ -1017,10 +1013,15 @@ function updateProgress() {
 async function fetchLibrary() {
     try {
         const baseUrl = getBaseURL();
-        console.log('🌍 Fetching library from:', `${baseUrl}/library`);
+        const fullUrl = `${baseUrl}/library`;
+        console.log('🌍 Base URL:', baseUrl);
+        console.log('📚 Fetching library from:', fullUrl);
+        console.log('📚 Full fetch URL (debug):', fullUrl);
         
-        const res = await fetch(`${baseUrl}/library`);
-        if (!res.ok) throw new Error('Falha ao carregar biblioteca');
+        const res = await fetch(fullUrl);
+        console.log('📚 Response status:', res.status);
+        console.log('📚 Response URL:', res.url);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         
         libraryData = await res.json();
         filteredLibrary = [...libraryData];
@@ -1211,7 +1212,16 @@ async function fetchPlaylists() {
     if (!userId) return;
     
     try {
-        const response = await fetch(`${getBaseURL()}/users/${userId}/playlists`);
+        const baseUrl = getBaseURL();
+        const fullUrl = `${baseUrl}/users/${userId}/playlists`;
+        console.log('🎵 Base URL:', baseUrl);
+        console.log('🎵 User ID:', userId);
+        console.log('🎵 Fetching playlists from:', fullUrl);
+        console.log('🎵 Full fetch URL (debug):', fullUrl);
+        
+        const response = await fetch(fullUrl);
+        console.log('🎵 Response status:', response.status);
+        console.log('🎵 Response URL:', response.url);
         if (response.ok) {
             userPlaylists = await response.json();
             renderPlaylists();
@@ -1498,6 +1508,54 @@ function handleChatMessage(message) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+function renderQueue(queue) {
+    const queueList = document.getElementById('queueList');
+    if (!queueList) return;
+    
+    queueList.innerHTML = '';
+    
+    if (!queue || queue.length === 0) {
+        queueList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-list-ol"></i>
+                <p>Fila vazia</p>
+                <small>Adicione músicas da biblioteca ou carregue uma playlist</small>
+            </div>
+        `;
+        return;
+    }
+    
+    queue.forEach((trackId, index) => {
+        // Find track data from library
+        const track = libraryData.find(t => t.id === trackId);
+        if (!track) return;
+        
+        const queueItem = document.createElement('div');
+        queueItem.className = 'queue-item';
+        if (trackId === currentTrackId) {
+            queueItem.classList.add('current-track');
+        }
+        
+        queueItem.innerHTML = `
+            <div class="queue-item-index">${index + 1}</div>
+            <div class="queue-item-info">
+                <div class="queue-item-title">${track.title}</div>
+                <div class="queue-item-meta">ID: ${track.id}</div>
+            </div>
+            <div class="queue-item-actions">
+                <button class="btn btn-sm btn-outline-primary" onclick="playTrackFromQueue(${trackId})">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-danger" onclick="removeFromQueue(${index})">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        `;
+        
+        queueList.appendChild(queueItem);
+    });
+}
+
 function playTrackFromQueue(trackId) {
     if (!currentPartyId) {
         playTrack(trackId);
@@ -1513,6 +1571,25 @@ function playTrackFromQueue(trackId) {
     sendMessage('player_action', {
         action: 'change_track',
         track_id: trackId
+    });
+}
+
+function removeFromQueue(position) {
+    if (!currentPartyId) {
+        showNotification('Você precisa estar em uma festa para usar a fila', 'warning');
+        return;
+    }
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    if (!canControl) {
+        showNotification('Você não tem permissão para controlar a festa', 'warning');
+        return;
+    }
+    
+    sendMessage('queue_action', {
+        action: 'remove',
+        position: position,
+        party_id: currentPartyId
     });
 }
 
@@ -1532,6 +1609,69 @@ function sendChatMessage() {
 }
 
 // --- Updated Player Controls for Next/Previous ---
+
+function updatePlayerControls() {
+    if (!currentPartyId) {
+        // Solo mode - enable all controls
+        nextBtn.disabled = false;
+        prevBtn.disabled = false;
+        return;
+    }
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    
+    if (!canControl) {
+        // Member in host mode - disable controls
+        nextBtn.disabled = true;
+        prevBtn.disabled = true;
+    } else {
+        // Host or democratic mode - enable controls
+        nextBtn.disabled = false;
+        prevBtn.disabled = false;
+    }
+}
+
+function handleNextTrack() {
+    if (currentPartyId) {
+        const canControl = isHost || currentPartyMode === 'democratic';
+        if (!canControl) {
+            showNotification('Você não tem permissão para controlar a festa', 'warning');
+            return;
+        }
+        
+        sendMessage('player_action', { action: 'next_track' });
+    } else {
+        // Solo mode - implement local next track logic
+        if (currentQueue.length > 0 && currentTrackId) {
+            const currentIndex = currentQueue.indexOf(currentTrackId);
+            if (currentIndex < currentQueue.length - 1) {
+                const nextTrackId = currentQueue[currentIndex + 1];
+                playTrack(nextTrackId);
+            }
+        }
+    }
+}
+
+function handlePrevTrack() {
+    if (currentPartyId) {
+        const canControl = isHost || currentPartyMode === 'democratic';
+        if (!canControl) {
+            showNotification('Você não tem permissão para controlar a festa', 'warning');
+            return;
+        }
+        
+        sendMessage('player_action', { action: 'prev_track' });
+    } else {
+        // Solo mode - implement local previous track logic
+        if (currentQueue.length > 0 && currentTrackId) {
+            const currentIndex = currentQueue.indexOf(currentTrackId);
+            if (currentIndex > 0) {
+                const prevTrackId = currentQueue[currentIndex - 1];
+                playTrack(prevTrackId);
+            }
+        }
+    }
+}
 
 // --- Initialization ---
 
@@ -1558,133 +1698,8 @@ window.addEventListener('load', () => {
         console.log('📱 Debug info exibido');
     }
     
-    // Verificar conectividade básica
-    testConnectivity().then(isConnected => {
-        console.log('🌐 Conectividade:', isConnected ? 'OK' : 'Problemas detectados');
-        
-        // Inicializar modal com verificação de erro
-        setTimeout(() => {
-            initializeModal(isMobile);
-        }, 300);
-        
-        // Configurar event listeners após um pequeno delay
-        setTimeout(() => {
-            setupEventListeners();
-        }, 600);
-    });
+    console.log('✅ Inicialização básica concluída');
 });
-
-async function testConnectivity() {
-    try {
-        const baseUrl = getBaseURL();
-        console.log('🌐 Testando conectividade com:', baseUrl);
-        
-        // Criar controller para timeout manual (compatibilidade)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
-        
-        // Usar GET ao invés de HEAD para evitar erro 405
-        const response = await fetch(`${baseUrl}/library`, {
-            method: 'GET',
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        console.log('🌐 Resposta do servidor:', response.status);
-        return response.ok;
-    } catch (error) {
-        console.warn('⚠️ Erro na conectividade:', error);
-        return false;
-    }
-}
-
-function initializeModal(isMobile) {
-    console.log('🚪 Inicializando modal...');
-    console.log('📱 Dispositivo móvel:', isMobile);
-    console.log('🌍 Bootstrap disponível:', typeof bootstrap !== 'undefined');
-    
-    // Força entrada alternativa em dispositivos móveis problemáticos
-    const forceFallback = isMobile && (
-        navigator.userAgent.includes('iPhone') ||
-        navigator.userAgent.includes('iPad') ||
-        navigator.userAgent.includes('Android')
-    );
-    
-    if (forceFallback) {
-        console.log('📱 Forçando entrada alternativa para dispositivo móvel');
-        setTimeout(() => showAlternativeEntry(), 500);
-        return;
-    }
-    
-    try {
-        const modalElement = document.getElementById('nameModal');
-        if (modalElement && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-            nameModal = new bootstrap.Modal(modalElement, {
-                backdrop: 'static',
-                keyboard: false
-            });
-            console.log('✅ Bootstrap Modal inicializado');
-            
-            // Tentar mostrar o modal após um delay
-            setTimeout(() => {
-                initializeNameEntry(isMobile);
-            }, 200);
-        } else {
-            console.warn('⚠️ Bootstrap Modal não disponível, usando entrada alternativa');
-            showAlternativeEntry();
-        }
-    } catch (error) {
-        console.error('❌ Erro ao inicializar modal:', error);
-        showAlternativeEntry();
-    }
-}
-
-function initializeNameEntry(isMobile) {
-    console.log('🚪 Inicializando entrada de nome...');
-    
-    if (!nameModal) {
-        console.warn('⚠️ Modal não disponível, usando entrada alternativa');
-        showAlternativeEntry();
-        return;
-    }
-    
-    try {
-        console.log('🚪 Tentando exibir modal...');
-        nameModal.show();
-        console.log('✅ Modal exibido com sucesso');
-        
-        if (isMobile) {
-            setupMobileFallback();
-        }
-        
-    } catch (error) {
-        console.error('❌ Erro ao exibir modal:', error);
-        showAlternativeEntry();
-    }
-}
-
-function setupMobileFallback() {
-    setTimeout(() => {
-        const modalElement = document.getElementById('nameModal');
-        const isModalVisible = modalElement.classList.contains('show');
-        
-        if (isModalVisible && !userName && alternativeJoinButton) {
-            alternativeJoinButton.classList.remove('d-none');
-        }
-    }, 5000);
-    
-    setTimeout(() => {
-        const modalElement = document.getElementById('nameModal');
-        const isModalVisible = modalElement.classList.contains('show');
-        
-        if (isModalVisible && !userName) {
-            showNotification('Problemas com o modal? Use a entrada alternativa.', 'info');
-            if (alternativeJoinButton) {
-                alternativeJoinButton.classList.remove('d-none');
-            }
-        }
-    }, 10000);
-}
 
 // --- Authentication Functions ---
 
@@ -1786,56 +1801,6 @@ function logout() {
     showAuthScreen();
 }
 
-// Função para lidar com o botão continuar da autenticação
-async function handleAuthContinue() {
-    const nicknameInput = document.getElementById('nicknameInput');
-    const authContinueBtn = document.getElementById('authContinueBtn');
-    
-    const nickname = nicknameInput.value.trim();
-    
-    if (!nickname) {
-        showAuthError('Por favor, digite um apelido válido.');
-        return;
-    }
-    
-    if (nickname.length < 2) {
-        showAuthError('O apelido deve ter pelo menos 2 caracteres.');
-        return;
-    }
-    
-    if (nickname.length > 20) {
-        showAuthError('O apelido deve ter no máximo 20 caracteres.');
-        return;
-    }
-    
-    // Desabilitar botão durante autenticação
-    authContinueBtn.disabled = true;
-    authContinueBtn.innerHTML = '<span>Entrando...</span><i class="fas fa-spinner fa-spin"></i>';
-    
-    const success = await authenticateUser(nickname);
-    
-    if (success) {
-        hideAuthScreen();
-        initializeApp();
-    } else {
-        // Reabilitar botão
-        authContinueBtn.disabled = false;
-        authContinueBtn.innerHTML = '<span>Continuar</span><i class="fas fa-arrow-right"></i>';
-    }
-}
-
-// Função para inicializar o app após autenticação
-function initializeApp() {
-    console.log('🚀 Inicializando aplicação para usuário:', authenticatedUser);
-    
-    // Atualizar variáveis globais
-    userId = authenticatedUser.id;
-    userName = authenticatedUser.nickname;
-    
-    // Inicializar o resto da aplicação
-    initializeAppComponents();
-}
-
 // Name Entry Event Listeners - Configurar imediatamente
 document.addEventListener('DOMContentLoaded', () => {
     console.log('📄 DOM Content Loaded - Inicializando autenticação');
@@ -1874,209 +1839,70 @@ document.addEventListener('DOMContentLoaded', () => {
     if (authContinueBtn) {
         authContinueBtn.addEventListener('click', handleAuthContinue);
     }
+    
+    async function handleAuthContinue() {
+        const nickname = nicknameInput.value.trim();
+        
+        if (!nickname) {
+            showAuthError('Por favor, digite um apelido válido.');
+            return;
+        }
+        
+        if (nickname.length < 2) {
+            showAuthError('O apelido deve ter pelo menos 2 caracteres.');
+            return;
+        }
+        
+        if (nickname.length > 20) {
+            showAuthError('O apelido deve ter no máximo 20 caracteres.');
+            return;
+        }
+        
+        // Desabilitar botão durante autenticação
+        authContinueBtn.disabled = true;
+        authContinueBtn.innerHTML = '<span>Entrando...</span><i class="fas fa-spinner fa-spin"></i>';
+        
+        const success = await authenticateUser(nickname);
+        
+        if (success) {
+            hideAuthScreen();
+            initializeApp();
+        } else {
+            // Reabilitar botão
+            authContinueBtn.disabled = false;
+            authContinueBtn.innerHTML = '<span>Continuar</span><i class="fas fa-arrow-right"></i>';
+        }
+    }
+    
+    // Função para inicializar o app após autenticação
+    function initializeApp() {
+        console.log('🚀 Inicializando aplicação para usuário:', authenticatedUser);
+        
+        // Conectar WebSocket
+        connectWebSocket();
+        
+        // Carregar dados do usuário
+        fetchLibrary();
+        fetchPlaylists();
+        
+        // Configurar controles do player
+        updatePlayerControls(true);
+        updatePlayerStatus('solo');
+        
+        // Configurar volume inicial
+        if (volumeRange) {
+            volumeRange.value = currentVolume;
+            player.volume = currentVolume / 100;
+            updateVolumeIcon(currentVolume);
+        }
+        
+        // Configurar event listeners
+        setupEventListeners();
+        
+        console.log('✅ Torbware Records inicializado!');
+        showNotification('Bem-vindo ao Torbware Records!', 'success');
+    }
 });
-
-function initializeAppComponents() {
-    console.log('📄 Inicializando componentes da aplicação');
-        
-        const nameInput = document.getElementById('userNameInput');
-        const joinButton = document.getElementById('joinButton');
-        const alternativeSubmitButton = document.getElementById('alternativeSubmitButton');
-    const alternativeJoinButton = document.getElementById('alternativeJoinButton');
-    const alternativeNameInput = document.getElementById('alternativeNameInput');
-    
-    if (joinButton) {
-        joinButton.addEventListener('click', () => {
-            const name = nameInput?.value.trim() || '';
-            processUserEntry(name, false);
-        });
-        console.log('✅ Event listener adicionado ao joinButton');
-    }
-
-    if (alternativeSubmitButton) {
-        alternativeSubmitButton.addEventListener('click', () => {
-            const name = alternativeNameInput?.value.trim() || '';
-            processUserEntry(name, true);
-        });
-        console.log('✅ Event listener adicionado ao alternativeSubmitButton');
-    }
-
-    if (alternativeJoinButton) {
-        alternativeJoinButton.addEventListener('click', () => {
-            showAlternativeEntry();
-        });
-        console.log('✅ Event listener adicionado ao alternativeJoinButton');
-    }
-
-    if (nameInput) {
-        nameInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                joinButton?.click();
-            }
-        });
-        console.log('✅ Event listener adicionado ao nameInput');
-    }
-
-    if (alternativeNameInput) {
-        alternativeNameInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                alternativeSubmitButton?.click();
-            }
-        });
-        console.log('✅ Event listener adicionado ao alternativeNameInput');
-    }
-    
-    // Adicionar event listeners para playlists
-    const createPlaylistBtn = document.getElementById('createPlaylistBtn');
-    const createPlaylistConfirmBtn = document.getElementById('createPlaylistConfirmBtn');
-    const playPlaylistBtn = document.getElementById('playPlaylistBtn');
-    
-    if (createPlaylistBtn) {
-        createPlaylistBtn.addEventListener('click', openCreatePlaylistModal);
-        console.log('✅ Event listener adicionado ao createPlaylistBtn');
-    }
-    
-    if (createPlaylistConfirmBtn) {
-        createPlaylistConfirmBtn.addEventListener('click', createPlaylist);
-        console.log('✅ Event listener adicionado ao createPlaylistConfirmBtn');
-    }
-    
-    if (playPlaylistBtn) {
-        playPlaylistBtn.addEventListener('click', openSelectPlaylistModal);
-        console.log('✅ Event listener adicionado ao playPlaylistBtn');
-    }
-    
-    // Marcar como configurado para evitar múltiplas inicializações
-    eventListenersSetup = true;
-    console.log('✅ Event listeners configurados com sucesso!');
-} // Fim da função initializeAppComponents
-
-function showAlternativeEntry() {
-    console.log('🔧 Mostrando entrada alternativa');
-    
-    try {
-        // Esconder modal se estiver visível
-        const modalElement = document.getElementById('nameModal');
-        if (modalElement) {
-            modalElement.style.display = 'none';
-            modalElement.classList.remove('show');
-        }
-        
-        // Remover backdrops do Bootstrap
-        const backdrops = document.querySelectorAll('.modal-backdrop');
-        backdrops.forEach(backdrop => backdrop.remove());
-        
-        // Limpar classes do body
-        document.body.classList.remove('modal-open');
-        document.body.style.overflow = '';
-        document.body.style.paddingRight = '';
-        
-        // Mostrar entrada alternativa
-        if (alternativeEntry) {
-            alternativeEntry.classList.remove('d-none');
-            alternativeEntry.classList.add('show');
-            alternativeEntry.style.display = 'flex';
-            
-            // Focar no input após um delay
-            setTimeout(() => {
-                if (alternativeNameInput) {
-                    alternativeNameInput.focus();
-                    alternativeNameInput.select();
-                }
-            }, 100);
-        }
-        
-        console.log('✅ Entrada alternativa exibida');
-    } catch (error) {
-        console.error('❌ Erro ao mostrar entrada alternativa:', error);
-    }
-}
-
-function hideAlternativeEntry() {
-    document.body.classList.remove('alternative-active');
-    alternativeEntry.style.display = 'none';
-    alternativeEntry.classList.remove('show');
-    alternativeEntry.classList.add('d-none');
-}
-
-function processUserEntry(name, isAlternative = false) {
-    console.log('👤 Processando entrada:', name, 'Alternativa:', isAlternative);
-    console.log('🌍 URL Base:', getBaseURL());
-    
-    if (!name || name.length < 2 || name.length > 20) {
-        showNotification('Nome deve ter entre 2 e 20 caracteres', 'warning');
-        return false;
-    }
-    
-    if (userName && userId) {
-        console.log('⚠️ Usuário já existe');
-        return false;
-    }
-    
-    userName = name;
-    userId = generateUUID();
-    
-    console.log('✅ Usuário criado:', {userId, userName});
-    console.log('🌐 Host atual:', window.location.host);
-    console.log('🌐 Protocol:', window.location.protocol);
-    
-    hideAlternativeEntry();
-    
-    const modalElement = document.getElementById('nameModal');
-    if (modalElement) {
-        modalElement.style.display = 'none';
-        modalElement.classList.remove('show');
-    }
-    
-    const backdrops = document.querySelectorAll('.modal-backdrop');
-    backdrops.forEach(backdrop => backdrop.remove());
-    
-    document.body.classList.remove('modal-open');
-    document.body.style.overflow = '';
-    document.body.style.paddingRight = '';
-    
-    setTimeout(() => {
-        console.log('🚀 Inicializando aplicação...');
-        init();
-    }, 100);
-    
-    return true;
-}
-
-function init() {
-    console.log('🎵 Iniciando Torbware Records...');
-    console.log('User ID:', userId);
-    console.log('User Name:', userName);
-    
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    if (isMobile) {
-        document.body.classList.add('mobile-device');
-    }
-    
-    if (!player) {
-        console.error('❌ Player element not found');
-        showNotification('Erro na inicialização: player não encontrado', 'error');
-        return;
-    }
-    
-    connectWebSocket();
-    fetchLibrary();
-    fetchPlaylists(); // Fetch playlists on init
-    updatePlayerControls(true);
-    updatePlayerStatus('solo');
-    
-    // Set initial volume
-    if (volumeRange) {
-        volumeRange.value = currentVolume;
-        player.volume = currentVolume / 100;
-        updateVolumeIcon(currentVolume);
-    }
-    
-    console.log('✅ Torbware Records inicializado!');
-    showNotification('Bem-vindo ao Torbware Records!', 'success');
-}
 
 // --- Party Functions ---
 
@@ -2557,6 +2383,377 @@ function setupEventListeners() {
             }
         });
     }
+
+    // Marcar como configurado para evitar múltiplas inicializações
+    eventListenersSetup = true;
+    console.log('✅ Event listeners configurados com sucesso!');
+    }
+// --- Event Listeners Setup ---
+
+function setupEventListeners() {
+    // Prevenir múltiplas inicializações
+    if (eventListenersSetup) {
+        console.log('⚠️ Event listeners já configurados, pulando...');
+        return;
+    }
+    
+    console.log('🎮 Configurando event listeners...');
+    
+    // Player Events - Apenas visual, sem sincronização automática
+    if (player) {
+        player.addEventListener('play', () => {
+            if (playPauseIcon) playPauseIcon.className = 'fas fa-pause';
+            console.log('▶️ Play event - apenas atualização visual');
+        });
+        
+        player.addEventListener('pause', () => {
+            if (playPauseIcon) playPauseIcon.className = 'fas fa-play';
+            console.log('⏸️ Pause event - apenas atualização visual');
+        });
+        
+        player.addEventListener('timeupdate', updateProgress);
+        
+        // Remover seeking event listener automático para evitar loops
+        player.addEventListener('loadedmetadata', () => {
+            updateProgress();
+        });
+        
+        // Re-habilitar a barra de progresso quando o áudio estiver pronto para reprodução
+        player.addEventListener('canplay', () => {
+            if (progressBar) {
+                progressBar.parentElement.classList.remove('loading');
+                console.log('✅ Progress bar re-habilitada após carregamento do áudio');
+            }
+            
+            // SOLUÇÃO DEFINITIVA: Reprodução automática só quando o áudio está completamente carregado
+            if (shouldAutoPlay) {
+                console.log('🎵 Iniciando reprodução automática após carregamento completo');
+                player.play().catch(e => {
+                    console.warn("Autoplay failed:", e);
+                    showNotification('Clique para iniciar reprodução', 'warning');
+                });
+                shouldAutoPlay = false;
+            }
+        });
+    }
+
+    // Player Control Buttons
+    if (playPauseBtn) {
+        playPauseBtn.addEventListener('click', () => {
+            console.log('🎮 Play/Pause button clicked');
+            console.log('🎮 Current state:', { currentPartyId, isHost, currentPartyMode });
+            
+            // Sempre aplicar ação localmente primeiro para responsividade
+            lastPlayerAction = Date.now();
+            const action = player.paused ? 'play' : 'pause';
+            
+            if (player.paused) {
+                player.play().catch(e => console.warn("Play failed:", e));
+            } else {
+                player.pause();
+            }
+            
+            if (!currentPartyId) {
+                // MODO SOLO - Apenas controle local
+                console.log('🎧 SOLO: Play/Pause aplicado localmente');
+                showNotification(`${action === 'play' ? 'Reproduzindo' : 'Pausado'}`, 'success');
+                return;
+            }
+            
+            if (currentPartyMode === 'host') {
+                if (isHost) {
+                    // HOST EM MODO HOST - Controle total, não envia para servidor
+                    console.log('👑 HOST: Play/Pause aplicado com controle total');
+                    showNotification(`${action === 'play' ? 'Reproduzindo' : 'Pausado'} (host)`, 'success');
+                } else {
+                    // MEMBRO EM MODO HOST - Não pode controlar, reverter ação
+                    console.log('🚫 MEMBRO: Não pode controlar em modo host');
+                    showNotification('Apenas o host pode controlar o player', 'warning');
+                    // Reverter a ação
+                    if (action === 'play') {
+                        player.pause();
+                    } else {
+                        player.play().catch(e => console.warn("Play failed:", e));
+                    }
+                }
+            } else if (currentPartyMode === 'democratic') {
+                // MODO DEMOCRÁTICO - Todos podem controlar e sincronizam
+                console.log('🗳️ DEMOCRÁTICO: Enviando play/pause para sincronização');
+                
+                sendMessage('player_action', { 
+                    action: action,
+                    currentTime: player.currentTime 
+                });
+                
+                showNotification(`${action === 'play' ? 'Reproduzindo' : 'Pausado'} (democrático)`, 'success');
+            }
+        });
+    }
+
+    if (prevBtn) {
+        prevBtn.addEventListener('click', handlePrevTrack);
+    }
+
+    if (nextBtn) {
+        nextBtn.addEventListener('click', handleNextTrack);
+    }
+
+    // --- Progress Bar and Volume Events ---
+    if (progressBar) {
+        progressBar.addEventListener('click', (e) => {
+            const rect = progressBar.getBoundingClientRect();
+            const offsetX = e.clientX - rect.left;
+            const totalWidth = rect.width;
+            const clickPercentage = offsetX / totalWidth;
+            
+            const newTime = clickPercentage * player.duration;
+            seekToTime(newTime);
+        });
+        
+        // Adicionado para suporte a toque em dispositivos móveis
+        progressBar.addEventListener('touchend', (e) => {
+            const touch = e.changedTouches[0];
+            const rect = progressBar.getBoundingClientRect();
+            const offsetX = touch.clientX - rect.left;
+            const totalWidth = rect.width;
+            const clickPercentage = offsetX / totalWidth;
+            
+            const newTime = clickPercentage * player.duration;
+            seekToTime(newTime);
+        });
+    }
+
+    if (volumeRange) {
+        volumeRange.addEventListener('input', (e) => {
+            const newVolume = e.target.value;
+            player.volume = newVolume / 100;
+            currentVolume = newVolume;
+            updateVolumeIcon(newVolume);
+            
+            // Enviar nova configuração de volume para o servidor imediatamente
+            if (currentPartyId) {
+                sendMessage('player_action', { 
+                    action: 'set_volume', 
+                    volume: newVolume 
+                });
+            }
+        });
+    }
+
+    // Library Search
+    if (librarySearch) {
+        librarySearch.addEventListener('input', (e) => {
+            filterLibrary(e.target.value);
+        });
+    }
+
+    // Enhanced Party Controls
+    if (createPartyBtn) {
+        createPartyBtn.addEventListener('click', () => {
+            console.log('🎉 Create party button clicked');
+            createParty();
+        });
+    }
+
+    if (leavePartyBtn) {
+        leavePartyBtn.addEventListener('click', () => {
+            console.log('🚪 Leave party button clicked, currentPartyId:', currentPartyId);
+            
+            if (currentPartyId) {
+                if (confirm('Tem certeza que deseja sair da festa?')) {
+                    console.log('🚪 User confirmed leaving party');
+                    
+                    // Send leave message with party ID
+                    sendMessage('leave_party', { party_id: currentPartyId });
+                    showNotification('Saindo da festa...', 'info');
+                    
+                    // Force UI update in case WebSocket response is delayed
+                    setTimeout(() => {
+                        if (currentPartyId) {
+                            console.log('🚪 Forçando saída da festa na UI devido a timeout');
+                            forceLeaveParty();
+                        }
+                    }, 3000); // Reduzido para 3 segundos para resposta mais rápida
+                    
+                    // Disable button temporarily with loading state
+                    leavePartyBtn.disabled = true;
+                    leavePartyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saindo...';
+                    
+                    setTimeout(() => {
+                        if (leavePartyBtn && leavePartyBtn.disabled) {
+                            leavePartyBtn.disabled = false;
+                            leavePartyBtn.innerHTML = '<i class="fas fa-sign-out-alt"></i> Sair';
+                        }
+                    }, 3000);
+                } else {
+                    console.log('🚪 User cancelled leaving party');
+                }
+            } else {
+                console.log('🚪 Not in a party, cannot leave');
+                showNotification('Você não está em uma festa', 'warning');
+            }
+        });
+    }
+
+    if (democraticModeToggle) {
+        democraticModeToggle.addEventListener('change', (e) => {
+            if (isHost) {
+                sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
+                showNotification(
+                    e.target.checked ? 'Modo democrático ativado!' : 'Modo host ativado!', 
+                    'success'
+                );
+            }
+        });
+    }
+
+    // Chat
+    if (sendChatBtn) {
+        sendChatBtn.addEventListener('click', sendChatMessage);
+    }
+
+    if (chatInput) {
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendChatMessage();
+            }
+        });
+    }
+
+    // Upload Form
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (!audioFile.files.length) {
+                showNotification('Selecione um arquivo de áudio', 'warning');
+                return;
+            }
+
+            const file = audioFile.files[0];
+            const maxSize = 50 * 1024 * 1024; // 50MB
+            if (file.size > maxSize) {
+                showNotification('Arquivo muito grande. Máximo: 50MB', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            if (uploadStatus) {
+                uploadStatus.className = 'upload-status';
+                uploadStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fazendo upload...';
+            }
+
+            try {
+                const baseUrl = getBaseURL();
+                const res = await fetch(`${baseUrl}/upload`, { 
+                    method: 'POST', 
+                    body: formData 
+                });
+                
+                if (res.ok) {
+                    const result = await res.json();
+                    if (uploadStatus) {
+                        uploadStatus.innerHTML = `<i class="fas fa-check"></i> Upload realizado com sucesso! <strong>${result.title}</strong>`;
+                    }
+                    audioFile.value = '';
+                    fetchLibrary();
+                    showNotification('Música adicionada à biblioteca!', 'success');
+                    
+                    setTimeout(() => {
+                        if (uploadStatus) uploadStatus.innerHTML = '';
+                    }, 5000);
+                } else {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Erro no upload');
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                if (uploadStatus) {
+                    uploadStatus.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Erro: ${error.message}`;
+                }
+                showNotification('Erro no upload', 'error');
+            }
+        });
+    }
+
+    // Queue Controls
+    const clearQueueBtn = document.querySelector('.clear-queue-btn');
+    if (clearQueueBtn) {
+        clearQueueBtn.addEventListener('click', clearQueue);
+    }
+    
+    // YouTube Import Controls
+    const importUrlBtn = document.getElementById('importUrlBtn');
+    const youtubeUrlInput = document.getElementById('youtubeUrlInput');
+    const importUrlStatus = document.getElementById('importUrlStatus');
+
+    if (importUrlBtn) {
+        importUrlBtn.addEventListener('click', async () => {
+            const url = youtubeUrlInput.value.trim();
+            if (!url) {
+                showNotification('Por favor, cole uma URL do YouTube.', 'warning');
+                return;
+            }
+
+            // UI Feedback
+            importUrlBtn.disabled = true;
+            importUrlBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Importando...';
+            importUrlStatus.textContent = `Importando track do YouTube...`;
+
+            try {
+                const response = await fetch(`${getBaseURL()}/import_from_url`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Falha na importação da track.');
+                }
+
+                const newTrack = await response.json();
+                showNotification(`Importada com sucesso: ${newTrack.title}`, 'success');
+                youtubeUrlInput.value = ''; // Clear input
+                fetchLibrary(); // Refresh library list
+
+            } catch (error) {
+                showNotification(error.message, 'error');
+            } finally {
+                // Reset UI
+                importUrlBtn.disabled = false;
+                importUrlBtn.innerHTML = '<i class="fas fa-download"></i> Importar';
+                importUrlStatus.textContent = '';
+            }
+        });
+    }
+
+    // Playlist Controls
+    const createPlaylistBtn = document.getElementById('createPlaylistBtn');
+    const createPlaylistConfirmBtn = document.getElementById('createPlaylistConfirmBtn');
+    const playPlaylistBtn = document.getElementById('playPlaylistBtn');
+    
+    if (createPlaylistBtn) {
+        createPlaylistBtn.addEventListener('click', openCreatePlaylistModal);
+        console.log('✅ Event listener adicionado ao createPlaylistBtn');
+    }
+    
+    if (createPlaylistConfirmBtn) {
+        createPlaylistConfirmBtn.addEventListener('click', createPlaylist);
+        console.log('✅ Event listener adicionado ao createPlaylistConfirmBtn');
+    }
+    
+    if (playPlaylistBtn) {
+        playPlaylistBtn.addEventListener('click', openSelectPlaylistModal);
+        console.log('✅ Event listener adicionado ao playPlaylistBtn');
+    }
+
+    // Marcar como configurado para evitar múltiplas inicializações
+    eventListenersSetup = true;
+    console.log('✅ Event listeners configurados com sucesso!');
+}
 
 function updateVolumeIcon(volume) {
     if (!volumeIcon) return;
