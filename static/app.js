@@ -41,6 +41,10 @@ let filteredLibrary = [];
 let currentTrackId = null;
 let currentTrackData = null;
 
+// Playlist variables
+let userPlaylists = [];
+let currentTrackToAdd = null;
+
 // --- DOM Elements ---
 let nameModal = null;
 const nameInput = document.getElementById('userNameInput');
@@ -423,28 +427,17 @@ function applySyncUpdate(party, gentle = false) {
     }
 }
 
-function handleChatMessage(message) {
-    const messageElement = document.createElement('div');
-    messageElement.className = 'chat-message';
-    messageElement.innerHTML = `
-        <div class="chat-message-author">${message.author}</div>
-        <div class="chat-message-text">${message.text}</div>
-        <div class="chat-message-time">${new Date(message.timestamp).toLocaleTimeString()}</div>
-    `;
-    
-    chatMessages.appendChild(messageElement);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
 // --- UI Helper Functions ---
 
 function updateConnectionStatus(connected) {
+    if (!connectionStatus) return;
+    
     if (connected) {
-        connectionStatus.innerHTML = '<i class="fas fa-circle"></i> Conectado';
         connectionStatus.className = 'connection-indicator connected';
     } else {
-        connectionStatus.innerHTML = '<i class="fas fa-circle"></i> Desconectado';
         connectionStatus.className = 'connection-indicator disconnected';
+        // Mostrar toast de reconexão apenas quando desconecta
+        showNotification('Conexão perdida. Tentando reconectar...', 'warning');
     }
 }
 
@@ -631,6 +624,12 @@ function renderCurrentParty(party) {
         userId,
         hostId: party.host_id
     });
+    
+    // Mostrar/esconder botão de Play Playlist
+    const playPlaylistBtn = document.getElementById('playPlaylistBtn');
+    if (playPlaylistBtn) {
+        playPlaylistBtn.style.display = canControl ? 'inline-block' : 'none';
+    }
     
     updatePlayerControls(canControl);
     updatePlayerStatus(isHost ? 'host' : (party.mode === 'democratic' ? 'democratic' : 'member'));
@@ -1074,6 +1073,16 @@ function renderLibrary() {
                 <button class="btn btn-outline-secondary library-action-btn" onclick="addToQueue(${track.id})" title="Adicionar à fila">
                     <i class="fas fa-plus"></i>
                 </button>
+                <div class="dropdown">
+                    <button class="btn btn-outline-secondary library-action-btn dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        <i class="fas fa-ellipsis-v"></i>
+                    </button>
+                    <ul class="dropdown-menu">
+                        <li><button class="dropdown-item" onclick="openAddToPlaylistModal(${track.id}, '${track.title.replace(/'/g, "\\'")}')">
+                            <i class="fas fa-plus"></i> Adicionar à Playlist
+                        </button></li>
+                    </ul>
+                </div>
             </div>
         `;
         libraryList.appendChild(libraryItem);
@@ -1189,6 +1198,459 @@ function clearQueue() {
             action: 'clear',
             party_id: currentPartyId 
         });
+    }
+}
+
+// --- Playlist Management Functions ---
+
+async function fetchPlaylists() {
+    if (!userId) return;
+    
+    try {
+        const response = await fetch(`${getBaseURL()}/users/${userId}/playlists`);
+        if (response.ok) {
+            userPlaylists = await response.json();
+            renderPlaylists();
+        } else {
+            console.error('Failed to fetch playlists');
+            userPlaylists = [];
+            renderPlaylists();
+        }
+    } catch (error) {
+        console.error('Error fetching playlists:', error);
+        userPlaylists = [];
+        renderPlaylists();
+    }
+}
+
+function renderPlaylists() {
+    const playlistList = document.getElementById('playlistList');
+    if (!playlistList) return;
+    
+    playlistList.innerHTML = '';
+    
+    if (userPlaylists.length === 0) {
+        playlistList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-list"></i>
+                <p>Nenhuma playlist</p>
+                <small>Crie sua primeira playlist!</small>
+            </div>
+        `;
+        return;
+    }
+    
+    userPlaylists.forEach(playlist => {
+        const playlistItem = document.createElement('div');
+        playlistItem.className = 'playlist-item';
+        playlistItem.innerHTML = `
+            <div class="playlist-item-icon">
+                <i class="fas fa-list"></i>
+            </div>
+            <div class="playlist-item-info">
+                <div class="playlist-item-title">${playlist.name}</div>
+                <div class="playlist-item-meta">${playlist.track_count} músicas</div>
+            </div>
+            <div class="playlist-item-actions">
+                <button class="btn btn-outline-primary playlist-action-btn" onclick="viewPlaylist(${playlist.id})" title="Ver playlist">
+                    <i class="fas fa-eye"></i>
+                </button>
+                <div class="dropdown">
+                    <button class="btn btn-outline-secondary playlist-action-btn dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        <i class="fas fa-ellipsis-v"></i>
+                    </button>
+                    <ul class="dropdown-menu">
+                        <li><button class="dropdown-item" onclick="deletePlaylist(${playlist.id}, '${playlist.name.replace(/'/g, "\\'")}')">
+                            <i class="fas fa-trash text-danger"></i> Deletar Playlist
+                        </button></li>
+                    </ul>
+                </div>
+            </div>
+        `;
+        playlistList.appendChild(playlistItem);
+    });
+}
+
+function openCreatePlaylistModal() {
+    const modal = new bootstrap.Modal(document.getElementById('createPlaylistModal'));
+    document.getElementById('playlistNameInput').value = '';
+    modal.show();
+}
+
+async function createPlaylist() {
+    const nameInput = document.getElementById('playlistNameInput');
+    const name = nameInput.value.trim();
+    
+    if (!name) {
+        nameInput.classList.add('is-invalid');
+        return;
+    }
+    
+    nameInput.classList.remove('is-invalid');
+    
+    try {
+        const response = await fetch(`${getBaseURL()}/playlists`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                name: name,
+                owner_user_id: userId 
+            })
+        });
+        
+        if (response.ok) {
+            showNotification(`Playlist "${name}" criada com sucesso!`, 'success');
+            fetchPlaylists();
+            bootstrap.Modal.getInstance(document.getElementById('createPlaylistModal')).hide();
+        } else {
+            const error = await response.json();
+            showNotification(error.detail || 'Erro ao criar playlist', 'error');
+        }
+    } catch (error) {
+        console.error('Error creating playlist:', error);
+        showNotification('Erro ao criar playlist', 'error');
+    }
+}
+
+function openAddToPlaylistModal(trackId, trackTitle) {
+    currentTrackToAdd = trackId;
+    document.getElementById('trackToAddTitle').textContent = trackTitle;
+    
+    const modal = new bootstrap.Modal(document.getElementById('addToPlaylistModal'));
+    renderPlaylistSelectList('playlistSelectList');
+    modal.show();
+}
+
+function renderPlaylistSelectList(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    if (userPlaylists.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-list"></i>
+                <p>Nenhuma playlist encontrada</p>
+                <small>Crie uma playlist primeiro!</small>
+            </div>
+        `;
+        return;
+    }
+    
+    userPlaylists.forEach(playlist => {
+        const playlistOption = document.createElement('div');
+        playlistOption.className = 'playlist-select-item';
+        playlistOption.innerHTML = `
+            <div class="playlist-select-info">
+                <div class="playlist-select-title">${playlist.name}</div>
+                <div class="playlist-select-meta">${playlist.track_count} músicas</div>
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="addTrackToPlaylist(${playlist.id}, '${playlist.name.replace(/'/g, "\\'")}')">
+                <i class="fas fa-plus"></i> Adicionar
+            </button>
+        `;
+        container.appendChild(playlistOption);
+    });
+}
+
+async function addTrackToPlaylist(playlistId, playlistName) {
+    if (!currentTrackToAdd) return;
+    
+    try {
+        const response = await fetch(`${getBaseURL()}/playlists/${playlistId}/tracks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ track_id: currentTrackToAdd })
+        });
+        
+        if (response.ok) {
+            showNotification(`Música adicionada à playlist "${playlistName}"!`, 'success');
+            fetchPlaylists(); // Refresh to update track counts
+            bootstrap.Modal.getInstance(document.getElementById('addToPlaylistModal')).hide();
+        } else {
+            const error = await response.json();
+            if (error.detail && error.detail.includes('already in playlist')) {
+                showNotification('Esta música já está na playlist', 'warning');
+            } else {
+                showNotification(error.detail || 'Erro ao adicionar música à playlist', 'error');
+            }
+        }
+    } catch (error) {
+        console.error('Error adding track to playlist:', error);
+        showNotification('Erro ao adicionar música à playlist', 'error');
+    }
+}
+
+async function deletePlaylist(playlistId, playlistName) {
+    if (!confirm(`Tem certeza de que deseja deletar a playlist "${playlistName}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${getBaseURL()}/playlists/${playlistId}`, {
+            method: 'DELETE'
+        });
+        
+        if (response.ok) {
+            showNotification(`Playlist "${playlistName}" deletada com sucesso!`, 'success');
+            fetchPlaylists();
+        } else {
+            const error = await response.json();
+            showNotification(error.detail || 'Erro ao deletar playlist', 'error');
+        }
+    } catch (error) {
+        console.error('Error deleting playlist:', error);
+        showNotification('Erro ao deletar playlist', 'error');
+    }
+}
+
+async function viewPlaylist(playlistId) {
+    // TODO: Implementar visualização detalhada da playlist
+    // Por enquanto, apenas mostra uma notificação
+    showNotification('Visualização de playlist será implementada em breve', 'info');
+}
+
+function openSelectPlaylistModal() {
+    const modal = new bootstrap.Modal(document.getElementById('selectPlaylistModal'));
+    renderPartyPlaylistSelectList();
+    modal.show();
+}
+
+function renderPartyPlaylistSelectList() {
+    const container = document.getElementById('partyPlaylistSelectList');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    if (userPlaylists.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-list"></i>
+                <p>Nenhuma playlist encontrada</p>
+                <small>Crie uma playlist primeiro!</small>
+            </div>
+        `;
+        return;
+    }
+    
+    userPlaylists.forEach(playlist => {
+        const playlistOption = document.createElement('div');
+        playlistOption.className = 'playlist-select-item';
+        playlistOption.innerHTML = `
+            <div class="playlist-select-info">
+                <div class="playlist-select-title">${playlist.name}</div>
+                <div class="playlist-select-meta">${playlist.track_count} músicas</div>
+            </div>
+            <button class="btn btn-sm btn-success" onclick="setPartyPlaylist(${playlist.id}, '${playlist.name.replace(/'/g, "\\'")}')">
+                <i class="fas fa-play"></i> Tocar
+            </button>
+        `;
+        container.appendChild(playlistOption);
+    });
+}
+
+function setPartyPlaylist(playlistId, playlistName) {
+    if (!currentPartyId) {
+        showNotification('Você precisa estar em uma festa', 'warning');
+        return;
+    }
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    if (!canControl) {
+        showNotification('Você não tem permissão para controlar a festa', 'warning');
+        return;
+    }
+    
+    sendMessage('set_playlist', { playlist_id: playlistId });
+    showNotification(`Playlist "${playlistName}" sendo carregada na festa...`, 'info');
+    bootstrap.Modal.getInstance(document.getElementById('selectPlaylistModal')).hide();
+}
+
+// --- Updated WebSocket Message Handlers ---
+
+function handleChatMessage(message) {
+    const chatMessages = document.getElementById('chatMessages');
+    if (!chatMessages) return;
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'chat-message';
+    
+    const timestamp = new Date(message.timestamp * 1000).toLocaleTimeString();
+    messageDiv.innerHTML = `
+        <div class="chat-message-header">
+            <span class="chat-author">${message.author}</span>
+            <span class="chat-timestamp">${timestamp}</span>
+        </div>
+        <div class="chat-message-text">${message.text}</div>
+    `;
+    
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function renderQueue(queue) {
+    const queueList = document.getElementById('queueList');
+    if (!queueList) return;
+    
+    queueList.innerHTML = '';
+    
+    if (!queue || queue.length === 0) {
+        queueList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-list-ol"></i>
+                <p>Fila vazia</p>
+                <small>Adicione músicas da biblioteca ou carregue uma playlist</small>
+            </div>
+        `;
+        return;
+    }
+    
+    queue.forEach((trackId, index) => {
+        // Find track data from library
+        const track = libraryData.find(t => t.id === trackId);
+        if (!track) return;
+        
+        const queueItem = document.createElement('div');
+        queueItem.className = 'queue-item';
+        if (trackId === currentTrackId) {
+            queueItem.classList.add('current-track');
+        }
+        
+        queueItem.innerHTML = `
+            <div class="queue-item-index">${index + 1}</div>
+            <div class="queue-item-info">
+                <div class="queue-item-title">${track.title}</div>
+                <div class="queue-item-meta">ID: ${track.id}</div>
+            </div>
+            <div class="queue-item-actions">
+                <button class="btn btn-sm btn-outline-primary" onclick="playTrackFromQueue(${trackId})">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-danger" onclick="removeFromQueue(${index})">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        `;
+        
+        queueList.appendChild(queueItem);
+    });
+}
+
+function playTrackFromQueue(trackId) {
+    if (!currentPartyId) {
+        playTrack(trackId);
+        return;
+    }
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    if (!canControl) {
+        showNotification('Você não tem permissão para controlar a festa', 'warning');
+        return;
+    }
+    
+    sendMessage('player_action', {
+        action: 'change_track',
+        track_id: trackId
+    });
+}
+
+function removeFromQueue(position) {
+    if (!currentPartyId) {
+        showNotification('Você precisa estar em uma festa para usar a fila', 'warning');
+        return;
+    }
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    if (!canControl) {
+        showNotification('Você não tem permissão para controlar a festa', 'warning');
+        return;
+    }
+    
+    sendMessage('queue_action', {
+        action: 'remove',
+        position: position,
+        party_id: currentPartyId
+    });
+}
+
+function sendChatMessage() {
+    const chatInput = document.getElementById('chatInput');
+    if (!chatInput || !currentPartyId) return;
+    
+    const message = chatInput.value.trim();
+    if (!message) return;
+    
+    sendMessage('chat_message', {
+        text: message,
+        party_id: currentPartyId
+    });
+    
+    chatInput.value = '';
+}
+
+// --- Updated Player Controls for Next/Previous ---
+
+function updatePlayerControls() {
+    if (!currentPartyId) {
+        // Solo mode - enable all controls
+        nextBtn.disabled = false;
+        prevBtn.disabled = false;
+        return;
+    }
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    
+    if (!canControl) {
+        // Member in host mode - disable controls
+        nextBtn.disabled = true;
+        prevBtn.disabled = true;
+    } else {
+        // Host or democratic mode - enable controls
+        nextBtn.disabled = false;
+        prevBtn.disabled = false;
+    }
+}
+
+function handleNextTrack() {
+    if (currentPartyId) {
+        const canControl = isHost || currentPartyMode === 'democratic';
+        if (!canControl) {
+            showNotification('Você não tem permissão para controlar a festa', 'warning');
+            return;
+        }
+        
+        sendMessage('player_action', { action: 'next_track' });
+    } else {
+        // Solo mode - implement local next track logic
+        if (currentQueue.length > 0 && currentTrackId) {
+            const currentIndex = currentQueue.indexOf(currentTrackId);
+            if (currentIndex < currentQueue.length - 1) {
+                const nextTrackId = currentQueue[currentIndex + 1];
+                playTrack(nextTrackId);
+            }
+        }
+    }
+}
+
+function handlePrevTrack() {
+    if (currentPartyId) {
+        const canControl = isHost || currentPartyMode === 'democratic';
+        if (!canControl) {
+            showNotification('Você não tem permissão para controlar a festa', 'warning');
+            return;
+        }
+        
+        sendMessage('player_action', { action: 'prev_track' });
+    } else {
+        // Solo mode - implement local previous track logic
+        if (currentQueue.length > 0 && currentTrackId) {
+            const currentIndex = currentQueue.indexOf(currentTrackId);
+            if (currentIndex > 0) {
+                const prevTrackId = currentQueue[currentIndex - 1];
+                playTrack(prevTrackId);
+            }
+        }
     }
 }
 
@@ -1397,6 +1859,26 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         console.log('✅ Event listener adicionado ao alternativeNameInput');
     }
+    
+    // Adicionar event listeners para playlists
+    const createPlaylistBtn = document.getElementById('createPlaylistBtn');
+    const createPlaylistConfirmBtn = document.getElementById('createPlaylistConfirmBtn');
+    const playPlaylistBtn = document.getElementById('playPlaylistBtn');
+    
+    if (createPlaylistBtn) {
+        createPlaylistBtn.addEventListener('click', openCreatePlaylistModal);
+        console.log('✅ Event listener adicionado ao createPlaylistBtn');
+    }
+    
+    if (createPlaylistConfirmBtn) {
+        createPlaylistConfirmBtn.addEventListener('click', createPlaylist);
+        console.log('✅ Event listener adicionado ao createPlaylistConfirmBtn');
+    }
+    
+    if (playPlaylistBtn) {
+        playPlaylistBtn.addEventListener('click', openSelectPlaylistModal);
+        console.log('✅ Event listener adicionado ao playPlaylistBtn');
+    }
 });
 
 function showAlternativeEntry() {
@@ -1509,7 +1991,7 @@ function init() {
     
     connectWebSocket();
     fetchLibrary();
-    // Remover setupEventListeners() daqui - já foi chamado no window.load
+    fetchPlaylists(); // Fetch playlists on init
     updatePlayerControls(true);
     updatePlayerStatus('solo');
     
@@ -1526,25 +2008,26 @@ function init() {
 
 // --- Party Functions ---
 
+function createParty() {
+    if (!userName) {
+        showNotification('Por favor, defina seu nome primeiro', 'error');
+        return;
+    }
+    
+    if (currentPartyId) {
+        showNotification('Você já está em uma festa', 'warning');
+        return;
+    }
+    
+    sendMessage('create_party', {});
+    showNotification('Criando festa...', 'info');
+}
+
 function joinParty(partyId) {
     if (!currentPartyId) {
         sendMessage('join_party', { party_id: partyId });
         showNotification('Entrando na festa...', 'info');
     }
-}
-
-function sendChatMessage() {
-    if (!chatInput || !currentPartyId) return;
-    
-    const message = chatInput.value.trim();
-    if (!message) return;
-    
-    sendMessage('chat_message', { 
-        text: message,
-        party_id: currentPartyId 
-    });
-    
-    chatInput.value = '';
 }
 
 // Force leave party when WebSocket doesn't respond
@@ -1573,6 +2056,90 @@ function forceLeaveParty() {
     sendMessage('get_parties', {});
     
     showNotification('Você saiu da festa', 'success');
+}
+
+// --- Player Handler Functions ---
+
+function handlePrevTrack() {
+    console.log('🎮 Previous button clicked');
+    
+    // Sempre aplicar ação localmente primeiro
+    lastPlayerAction = Date.now();
+    player.currentTime = 0;
+    
+    if (!currentPartyId) {
+        // MODO SOLO - Apenas controle local
+        console.log('🎧 SOLO: Previous aplicado localmente');
+        showNotification('Voltou ao início', 'success');
+        return;
+    }
+    
+    if (currentPartyMode === 'host') {
+        if (isHost) {
+            // HOST EM MODO HOST - Controle total
+            console.log('👑 HOST: Previous aplicado com controle total');
+            showNotification('Voltou ao início (host)', 'success');
+        } else {
+            // MEMBRO EM MODO HOST - Não pode controlar
+            console.log('🚫 MEMBRO: Não pode usar previous em modo host');
+            showNotification('Apenas o host pode controlar o player', 'warning');
+        }
+    } else if (currentPartyMode === 'democratic') {
+        // MODO DEMOCRÁTICO - Enviar para sincronização
+        console.log('🗳️ DEMOCRÁTICO: Enviando previous para sincronização');
+        
+        sendMessage('player_action', { 
+            action: 'seek', 
+            currentTime: 0 
+        });
+        
+        showNotification('Voltou ao início (democrático)', 'success');
+    }
+}
+
+function handleNextTrack() {
+    console.log('🎮 Next button clicked');
+    
+    const newTime = player.duration ? player.duration - 1 : 0;
+    
+    // Sempre aplicar ação localmente primeiro
+    lastPlayerAction = Date.now();
+    if (player.duration) {
+        player.currentTime = newTime;
+    }
+    
+    if (!currentPartyId) {
+        // MODO SOLO - Apenas controle local
+        console.log('🎧 SOLO: Next aplicado localmente');
+        if (player.duration) {
+            showNotification('Avançou para o final', 'success');
+        } else {
+            showNotification('Próxima música não implementada ainda', 'info');
+        }
+        return;
+    }
+    
+    if (currentPartyMode === 'host') {
+        if (isHost) {
+            // HOST EM MODO HOST - Controle total
+            console.log('👑 HOST: Next aplicado com controle total');
+            showNotification('Avançou para o final (host)', 'success');
+        } else {
+            // MEMBRO EM MODO HOST - Não pode controlar
+            console.log('🚫 MEMBRO: Não pode usar next em modo host');
+            showNotification('Apenas o host pode controlar o player', 'warning');
+        }
+    } else if (currentPartyMode === 'democratic') {
+        // MODO DEMOCRÁTICO - Enviar para sincronização
+        console.log('🗳️ DEMOCRÁTICO: Enviando next para sincronização');
+        
+        sendMessage('player_action', { 
+            action: 'seek', 
+            currentTime: newTime 
+        });
+        
+        showNotification('Avançou para o final (democrático)', 'success');
+    }
 }
 
 // --- Event Listeners ---
@@ -1667,7 +2234,7 @@ function setupEventListeners() {
                 }
             } else if (currentPartyMode === 'democratic') {
                 // MODO DEMOCRÁTICO - Todos podem controlar e sincronizam
-                console.log('�️ DEMOCRÁTICO: Enviando play/pause para sincronização');
+                console.log('🗳️ DEMOCRÁTICO: Enviando play/pause para sincronização');
                 
                 sendMessage('player_action', { 
                     action: action,
@@ -1680,336 +2247,52 @@ function setupEventListeners() {
     }
 
     if (prevBtn) {
-        prevBtn.addEventListener('click', () => {
-            console.log('🎮 Previous button clicked');
-            
-            // Sempre aplicar ação localmente primeiro
-            lastPlayerAction = Date.now();
-            player.currentTime = 0;
-            
-            if (!currentPartyId) {
-                // MODO SOLO - Apenas controle local
-                console.log('🎧 SOLO: Previous aplicado localmente');
-                showNotification('Voltou ao início', 'success');
-                return;
-            }
-            
-            if (currentPartyMode === 'host') {
-                if (isHost) {
-                    // HOST EM MODO HOST - Controle total
-                    console.log('👑 HOST: Previous aplicado com controle total');
-                    showNotification('Voltou ao início (host)', 'success');
-                } else {
-                    // MEMBRO EM MODO HOST - Não pode controlar
-                    console.log('🚫 MEMBRO: Não pode usar previous em modo host');
-                    showNotification('Apenas o host pode controlar o player', 'warning');
-                }
-            } else if (currentPartyMode === 'democratic') {
-                // MODO DEMOCRÁTICO - Enviar para sincronização
-                console.log('🗳️ DEMOCRÁTICO: Enviando previous para sincronização');
-                
-                sendMessage('player_action', { 
-                    action: 'seek', 
-                    currentTime: 0 
-                });
-                
-                showNotification('Voltou ao início (democrático)', 'success');
-            }
-        });
+        prevBtn.addEventListener('click', handlePrevTrack);
     }
 
     if (nextBtn) {
-        nextBtn.addEventListener('click', () => {
-            console.log('🎮 Next button clicked');
-            
-            const newTime = player.duration ? player.duration - 1 : 0;
-            
-            // Sempre aplicar ação localmente primeiro
-            lastPlayerAction = Date.now();
-            if (player.duration) {
-                player.currentTime = newTime;
-            }
-            
-            if (!currentPartyId) {
-                // MODO SOLO - Apenas controle local
-                console.log('🎧 SOLO: Next aplicado localmente');
-                if (player.duration) {
-                    showNotification('Avançou para o final', 'success');
-                } else {
-                    showNotification('Próxima música não implementada ainda', 'info');
-                }
-                return;
-            }
-            
-            if (currentPartyMode === 'host') {
-                if (isHost) {
-                    // HOST EM MODO HOST - Controle total
-                    console.log('👑 HOST: Next aplicado com controle total');
-                    showNotification('Avançou para o final (host)', 'success');
-                } else {
-                    // MEMBRO EM MODO HOST - Não pode controlar
-                    console.log('🚫 MEMBRO: Não pode usar next em modo host');
-                    showNotification('Apenas o host pode controlar o player', 'warning');
-                }
-            } else if (currentPartyMode === 'democratic') {
-                // MODO DEMOCRÁTICO - Enviar para sincronização
-                console.log('🗳️ DEMOCRÁTICO: Enviando next para sincronização');
-                
-                sendMessage('player_action', { 
-                    action: 'seek', 
-                    currentTime: newTime 
-                });
-                
-                showNotification('Avançou para o final (democrático)', 'success');
-            }
-        });
+        nextBtn.addEventListener('click', handleNextTrack);
     }
 
-    // Progress Bar - Enhanced seek controls
+    // --- Progress Bar and Volume Events ---
     if (progressBar) {
-        let isDragging = false;
-        let isHovering = false;
-        
-        // Add hover effects
-        progressBar.addEventListener('mouseenter', () => {
-            isHovering = true;
-            progressBar.classList.add('hover');
-        });
-        
-        progressBar.addEventListener('mouseleave', () => {
-            isHovering = false;
-            if (!isDragging) {
-                progressBar.classList.remove('hover');
-                // Clear tooltip
-                const container = progressBar.closest('.progress-bar-container');
-                if (container) container.removeAttribute('data-time');
-            }
-        });
-        
-        // Show time tooltip on hover
-        progressBar.addEventListener('mousemove', (e) => {
-            if (!player.duration || isDragging) return;
-            
-            const rect = progressBar.getBoundingClientRect();
-            const percentage = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            const previewTime = percentage * player.duration;
-            
-            const container = progressBar.closest('.progress-bar-container');
-            if (container) {
-                container.setAttribute('data-time', formatTime(previewTime));
-            }
-        });
-        
-        // Handle click to seek anywhere on the progress bar
         progressBar.addEventListener('click', (e) => {
-            if (!player.duration || isDragging) {
-                console.log('🚫 Click seek blocked:', { duration: player.duration, isDragging });
-                return;
-            }
-            
-            e.preventDefault();
-            e.stopPropagation();
-            
             const rect = progressBar.getBoundingClientRect();
-            const percentage = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            const newTime = percentage * player.duration;
+            const offsetX = e.clientX - rect.left;
+            const totalWidth = rect.width;
+            const clickPercentage = offsetX / totalWidth;
             
-            console.log(`🎯 Click seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%) - Event listener executado`);
-            console.log('🎯 Current party state:', { currentPartyId, isHost, currentPartyMode });
-            
-            // Add loading state to button
-            const container = progressBar.closest('.progress-bar-container');
-            if (container) container.classList.add('seeking');
-            
-            setTimeout(() => {
-                if (container) container.classList.remove('seeking');
-            }, 500);
-            
+            const newTime = clickPercentage * player.duration;
             seekToTime(newTime);
         });
         
-        // Enhanced mouse drag handling
-        progressBar.addEventListener('mousedown', (e) => {
-            if (!player.duration) return;
-            
-            e.preventDefault();
-            e.stopPropagation();
-            
-            isDragging = true;
-            progressBar.classList.add('dragging');
-            document.body.style.userSelect = 'none';
-            
-            const startDrag = (event) => {
-                if (!isDragging || !player.duration) return;
-                
-                const rect = progressBar.getBoundingClientRect();
-                const percentage = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-                const newTime = percentage * player.duration;
-                
-                // Update visual progress while dragging
-                updateProgressVisual(percentage);
-                
-                // Update time display with preview
-                if (currentTimeDisplay) {
-                    currentTimeDisplay.textContent = formatTime(newTime);
-                    currentTimeDisplay.classList.add('seeking');
-                }
-                
-                // Update tooltip
-                const container = progressBar.closest('.progress-bar-container');
-                if (container) {
-                    container.setAttribute('data-time', formatTime(newTime));
-                }
-            };
-            
-            const endDrag = (event) => {
-                if (!isDragging || !player.duration) return;
-                
-                const rect = progressBar.getBoundingClientRect();
-                const percentage = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-                const newTime = percentage * player.duration;
-                
-                isDragging = false;
-                progressBar.classList.remove('dragging', 'hover');
-                document.body.style.userSelect = '';
-                
-                if (currentTimeDisplay) {
-                    currentTimeDisplay.classList.remove('seeking');
-                }
-                
-                // Clear tooltip
-                const container = progressBar.closest('.progress-bar-container');
-                if (container) container.removeAttribute('data-time');
-                
-                document.removeEventListener('mousemove', startDrag);
-                document.removeEventListener('mouseup', endDrag);
-                
-                console.log(`🎯 Drag seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%)`);
-                seekToTime(newTime);
-            };
-            
-            document.addEventListener('mousemove', startDrag);
-            document.addEventListener('mouseup', endDrag);
-            
-            // Handle the initial click position
-            startDrag(e);
-        });
-        
-        // Enhanced touch events for mobile
-        progressBar.addEventListener('touchstart', (e) => {
-            if (!player.duration) return;
-            
-            e.preventDefault();
-            isDragging = true;
-            progressBar.classList.add('dragging');
-            
-            const touch = e.touches[0];
-            const rect = progressBar.getBoundingClientRect();
-            const percentage = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
-            const newTime = percentage * player.duration;
-            
-            updateProgressVisual(percentage);
-            if (currentTimeDisplay) {
-                currentTimeDisplay.textContent = formatTime(newTime);
-                currentTimeDisplay.classList.add('seeking');
-            }
-        }, { passive: false });
-        
-        progressBar.addEventListener('touchmove', (e) => {
-            if (!isDragging || !player.duration) return;
-            e.preventDefault();
-            
-            const touch = e.touches[0];
-            const rect = progressBar.getBoundingClientRect();
-            const percentage = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
-            const newTime = percentage * player.duration;
-            
-            updateProgressVisual(percentage);
-            if (currentTimeDisplay) {
-                currentTimeDisplay.textContent = formatTime(newTime);
-            }
-        }, { passive: false });
-        
+        // Adicionado para suporte a toque em dispositivos móveis
         progressBar.addEventListener('touchend', (e) => {
-            if (!isDragging || !player.duration) return;
-            e.preventDefault();
-            
             const touch = e.changedTouches[0];
             const rect = progressBar.getBoundingClientRect();
-            const percentage = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
-            const newTime = percentage * player.duration;
+            const offsetX = touch.clientX - rect.left;
+            const totalWidth = rect.width;
+            const clickPercentage = offsetX / totalWidth;
             
-            isDragging = false;
-            progressBar.classList.remove('dragging');
-            
-            if (currentTimeDisplay) {
-                currentTimeDisplay.classList.remove('seeking');
-            }
-            
-            console.log(`🎯 Touch seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%)`);
+            const newTime = clickPercentage * player.duration;
             seekToTime(newTime);
-        }, { passive: false });
-        
-        // Keyboard accessibility
-        progressBar.addEventListener('keydown', (e) => {
-            if (!player.duration) return;
-            
-            let seekAmount = 0;
-            switch(e.key) {
-                case 'ArrowLeft':
-                    seekAmount = -10; // 10 seconds back
-                    break;
-                case 'ArrowRight':
-                    seekAmount = 10; // 10 seconds forward
-                    break;
-                case 'Home':
-                    seekToTime(0);
-                    e.preventDefault();
-                    return;
-                case 'End':
-                    seekToTime(player.duration - 1);
-                    e.preventDefault();
-                    return;
-                default:
-                    return;
-            }
-            
-            if (seekAmount !== 0) {
-                e.preventDefault();
-                const newTime = Math.max(0, Math.min(player.duration, player.currentTime + seekAmount));
-                seekToTime(newTime);
-            }
         });
-        
-        // Make progress bar focusable for keyboard navigation
-        progressBar.setAttribute('tabindex', '0');
-        progressBar.setAttribute('role', 'slider');
-        progressBar.setAttribute('aria-label', 'Seek track position');
     }
 
-    // Volume Control
     if (volumeRange) {
         volumeRange.addEventListener('input', (e) => {
-            const volume = parseInt(e.target.value);
-            currentVolume = volume;
-            player.volume = volume / 100;
+            const newVolume = e.target.value;
+            player.volume = newVolume / 100;
+            currentVolume = newVolume;
+            updateVolumeIcon(newVolume);
             
-            updateVolumeIcon(volume);
-        });
-    }
-
-    if (volumeBtn) {
-        volumeBtn.addEventListener('click', () => {
-            if (isMuted) {
-                player.volume = currentVolume / 100;
-                volumeRange.value = currentVolume;
-                isMuted = false;
-            } else {
-                player.volume = 0;
-                volumeRange.value = 0;
-                isMuted = true;
+            // Enviar nova configuração de volume para o servidor imediatamente
+            if (currentPartyId) {
+                sendMessage('player_action', { 
+                    action: 'set_volume', 
+                    volume: newVolume 
+                });
             }
-            updateVolumeIcon(isMuted ? 0 : currentVolume);
         });
     }
 
@@ -2023,18 +2306,8 @@ function setupEventListeners() {
     // Enhanced Party Controls
     if (createPartyBtn) {
         createPartyBtn.addEventListener('click', () => {
-            if (!currentPartyId) {
-                sendMessage('create_party', {});
-                showNotification('Criando festa...', 'info');
-                
-                // Disable button temporarily to prevent double clicks
-                createPartyBtn.disabled = true;
-                setTimeout(() => {
-                    if (createPartyBtn) createPartyBtn.disabled = false;
-                }, 2000);
-            } else {
-                showNotification('Você já está em uma festa', 'warning');
-            }
+            console.log('🎉 Create party button clicked');
+            createParty();
         });
     }
 
@@ -2212,7 +2485,7 @@ function setupEventListeners() {
             }
         });
     }
-    
+
     // Marcar como configurado para evitar múltiplas inicializações
     eventListenersSetup = true;
     console.log('✅ Event listeners configurados com sucesso!');

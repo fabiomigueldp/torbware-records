@@ -14,13 +14,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.templating import Jinja2Templates
 from pydantic import BaseModel, HttpUrl
 
-from app.database import SessionLocal, Track, init_db
+from app.database import SessionLocal, Track, Playlist, PlaylistTrack, init_db
 from app.convert import convert_to_aac
 from app.importer import import_from_youtube
 
 # --- Pydantic Models ---
 class URLImportRequest(BaseModel):
     url: HttpUrl
+
+class PlaylistCreateRequest(BaseModel):
+    name: str
+    owner_user_id: str
+
+class PlaylistAddTrackRequest(BaseModel):
+    track_id: int
+
+class PlaylistUpdateTracksRequest(BaseModel):
+    tracks: List[dict]  # [{"track_id": 1, "position": 0}, ...]
 
 # --- Range Requests Support ---
 def range_requests_response(
@@ -151,6 +161,15 @@ class Party:
         self.last_action_timestamp: float = time.time()
         self.last_action_user: str = host_id
         self.action_debounce_time: float = 0.5  # 500ms debounce
+        
+        # Novos atributos para queue e playlist
+        self.queue: List[int] = []  # Lista de track IDs para a queue simples
+        self.chat_history: List[Dict] = []  # Histórico do chat (opcional)
+        
+        # Para integração com playlists
+        self.active_playlist_id: int | None = None
+        self.current_playlist_index: int = 0
+        self.is_playlist_active: bool = False
 
     def can_accept_action(self, user_id: str, action_timestamp: float = None) -> bool:
         """
@@ -198,6 +217,10 @@ class Party:
             "member_count": len(self.members),
             "current_track_title": track_title,
             "mode": self.mode,
+            "queue": self.queue,
+            "active_playlist_id": self.active_playlist_id,
+            "is_playlist_active": self.is_playlist_active,
+            "current_playlist_index": self.current_playlist_index,
         }
 
     async def broadcast_sync(self, manager: ConnectionManager):
@@ -211,6 +234,10 @@ class Party:
                 "currentTime": self.current_time,
                 "is_playing": self.is_playing,
                 "mode": self.mode,
+                "queue": self.queue,
+                "active_playlist_id": self.active_playlist_id,
+                "is_playlist_active": self.is_playlist_active,
+                "current_playlist_index": self.current_playlist_index,
             }
         }
         for member_id in self.members:
@@ -322,6 +349,44 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         party.current_time = 0
                         party.is_playing = True # Autoplay new track
                         
+                        # Se uma playlist está ativa, atualiza o índice
+                        if party.is_playlist_active and party.current_track_id in party.queue:
+                            party.current_playlist_index = party.queue.index(party.current_track_id)
+                    
+                    elif action == "next_track":
+                        if party.is_playlist_active and party.queue:
+                            if party.current_playlist_index < len(party.queue) - 1:
+                                party.current_playlist_index += 1
+                                party.current_track_id = party.queue[party.current_playlist_index]
+                                party.current_time = 0
+                                party.is_playing = True
+                                print(f"⏭️ Próxima música: {party.current_track_id}")
+                        elif party.queue and not party.is_playlist_active:
+                            # Queue simples - move para a próxima
+                            if party.current_track_id in party.queue:
+                                current_index = party.queue.index(party.current_track_id)
+                                if current_index < len(party.queue) - 1:
+                                    party.current_track_id = party.queue[current_index + 1]
+                                    party.current_time = 0
+                                    party.is_playing = True
+                    
+                    elif action == "prev_track":
+                        if party.is_playlist_active and party.queue:
+                            if party.current_playlist_index > 0:
+                                party.current_playlist_index -= 1
+                                party.current_track_id = party.queue[party.current_playlist_index]
+                                party.current_time = 0
+                                party.is_playing = True
+                                print(f"⏮️ Música anterior: {party.current_track_id}")
+                        elif party.queue and not party.is_playlist_active:
+                            # Queue simples - move para a anterior
+                            if party.current_track_id in party.queue:
+                                current_index = party.queue.index(party.current_track_id)
+                                if current_index > 0:
+                                    party.current_track_id = party.queue[current_index - 1]
+                                    party.current_time = 0
+                                    party.is_playing = True
+                        
                     await party.broadcast_sync(manager)
                     await broadcast_state_update() # To update track title
                 else:
@@ -350,6 +415,104 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     party.mode = payload.get("mode", "host")
                     await party.broadcast_sync(manager)
                     await broadcast_state_update()
+
+            # Queue actions (host or democratic mode)
+            elif msg_type == "queue_action" and user_party_id and user_party_id in parties:
+                party = parties[user_party_id]
+                # Verifica permissões: host ou modo democrático
+                can_control = (user_id == party.host_id) or (party.mode == 'democratic')
+                
+                if can_control:
+                    action = payload.get("action")
+                    
+                    if action == "add":
+                        track_id = payload.get("track_id")
+                        if track_id and not party.is_playlist_active:
+                            party.queue.append(track_id)
+                            print(f"🎵 Track {track_id} adicionada à queue por {manager.user_names.get(user_id, 'Unknown')}")
+                    
+                    elif action == "remove":
+                        position = payload.get("position")
+                        if position is not None and 0 <= position < len(party.queue) and not party.is_playlist_active:
+                            removed_track = party.queue.pop(position)
+                            print(f"🗑️ Track {removed_track} removida da queue (posição {position})")
+                    
+                    elif action == "clear":
+                        if not party.is_playlist_active:
+                            party.queue.clear()
+                            print(f"🧹 Queue limpa por {manager.user_names.get(user_id, 'Unknown')}")
+                    
+                    # Broadcast da atualização da queue
+                    queue_message = {
+                        "type": "queue_update",
+                        "payload": {"queue": party.queue}
+                    }
+                    for member_id in party.members:
+                        if member_id in manager.active_connections:
+                            await manager.active_connections[member_id].send_json(queue_message)
+
+            # Chat message
+            elif msg_type == "chat_message" and user_party_id and user_party_id in parties:
+                party = parties[user_party_id]
+                text = payload.get("text", "").strip()
+                
+                if text:  # Não enviar mensagens vazias
+                    message_obj = {
+                        "author": manager.user_names.get(user_id, "Unknown"),
+                        "text": text,
+                        "timestamp": time.time()
+                    }
+                    
+                    # Opcional: salvar no histórico
+                    party.chat_history.append(message_obj)
+                    # Manter apenas as últimas 100 mensagens
+                    if len(party.chat_history) > 100:
+                        party.chat_history = party.chat_history[-100:]
+                    
+                    # Broadcast da mensagem
+                    chat_message = {
+                        "type": "chat_message",
+                        "payload": message_obj
+                    }
+                    for member_id in party.members:
+                        if member_id in manager.active_connections:
+                            await manager.active_connections[member_id].send_json(chat_message)
+
+            # Set playlist (host or democratic mode)
+            elif msg_type == "set_playlist" and user_party_id and user_party_id in parties:
+                party = parties[user_party_id]
+                # Verifica permissões: host ou modo democrático
+                can_control = (user_id == party.host_id) or (party.mode == 'democratic')
+                
+                if can_control:
+                    playlist_id = payload.get("playlist_id")
+                    
+                    if playlist_id:
+                        db = SessionLocal()
+                        try:
+                            # Busca a playlist e suas tracks
+                            playlist = db.query(Playlist).filter(Playlist.id == playlist_id).first()
+                            if playlist:
+                                playlist_tracks = db.query(PlaylistTrack).filter(
+                                    PlaylistTrack.playlist_id == playlist_id
+                                ).order_by(PlaylistTrack.position).all()
+                                
+                                if playlist_tracks:
+                                    # Ativa a playlist
+                                    party.is_playlist_active = True
+                                    party.active_playlist_id = playlist_id
+                                    party.queue = [pt.track_id for pt in playlist_tracks]
+                                    party.current_playlist_index = 0
+                                    party.current_track_id = party.queue[0]
+                                    party.is_playing = True
+                                    party.current_time = 0.0
+                                    
+                                    print(f"🎵 Playlist '{playlist.name}' ativada por {manager.user_names.get(user_id, 'Unknown')}")
+                                    
+                                    await party.broadcast_sync(manager)
+                                    await broadcast_state_update()
+                        finally:
+                            db.close()
 
     except WebSocketDisconnect:
         # Handle user disconnecting
@@ -428,6 +591,195 @@ def get_library():
     tracks = db.query(Track).all()
     db.close()
     return [{"id": t.id, "title": t.title} for t in tracks]
+
+# --- Playlist CRUD Endpoints ---
+
+@app.post("/playlists")
+def create_playlist(request: PlaylistCreateRequest):
+    """Cria uma nova playlist vazia"""
+    db = SessionLocal()
+    try:
+        playlist = Playlist(
+            name=request.name,
+            owner_user_id=request.owner_user_id
+        )
+        db.add(playlist)
+        db.commit()
+        db.refresh(playlist)
+        return {
+            "id": playlist.id,
+            "name": playlist.name,
+            "owner_user_id": playlist.owner_user_id
+        }
+    finally:
+        db.close()
+
+@app.get("/users/{user_id}/playlists")
+def get_user_playlists(user_id: str):
+    """Busca todas as playlists de um usuário"""
+    db = SessionLocal()
+    try:
+        playlists = db.query(Playlist).filter(Playlist.owner_user_id == user_id).all()
+        return [
+            {
+                "id": p.id,
+                "name": p.name,
+                "owner_user_id": p.owner_user_id,
+                "track_count": len(p.tracks)
+            }
+            for p in playlists
+        ]
+    finally:
+        db.close()
+
+@app.get("/playlists/{playlist_id}")
+def get_playlist(playlist_id: int):
+    """Busca uma playlist com suas tracks ordenadas por posição"""
+    db = SessionLocal()
+    try:
+        playlist = db.query(Playlist).filter(Playlist.id == playlist_id).first()
+        if not playlist:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        
+        # Busca as tracks da playlist ordenadas por posição
+        playlist_tracks = db.query(PlaylistTrack).filter(
+            PlaylistTrack.playlist_id == playlist_id
+        ).order_by(PlaylistTrack.position).all()
+        
+        tracks = []
+        for pt in playlist_tracks:
+            track = db.query(Track).filter(Track.id == pt.track_id).first()
+            if track:
+                tracks.append({
+                    "id": track.id,
+                    "title": track.title,
+                    "position": pt.position
+                })
+        
+        return {
+            "id": playlist.id,
+            "name": playlist.name,
+            "owner_user_id": playlist.owner_user_id,
+            "tracks": tracks
+        }
+    finally:
+        db.close()
+
+@app.post("/playlists/{playlist_id}/tracks")
+def add_track_to_playlist(playlist_id: int, request: PlaylistAddTrackRequest):
+    """Adiciona uma track ao final de uma playlist"""
+    db = SessionLocal()
+    try:
+        # Verifica se a playlist existe
+        playlist = db.query(Playlist).filter(Playlist.id == playlist_id).first()
+        if not playlist:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        
+        # Verifica se a track existe
+        track = db.query(Track).filter(Track.id == request.track_id).first()
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+        
+        # Verifica se a track já está na playlist
+        existing = db.query(PlaylistTrack).filter(
+            PlaylistTrack.playlist_id == playlist_id,
+            PlaylistTrack.track_id == request.track_id
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Track already in playlist")
+        
+        # Encontra a próxima posição
+        max_position = db.query(PlaylistTrack).filter(
+            PlaylistTrack.playlist_id == playlist_id
+        ).count()
+        
+        # Cria a nova entrada
+        playlist_track = PlaylistTrack(
+            playlist_id=playlist_id,
+            track_id=request.track_id,
+            position=max_position
+        )
+        db.add(playlist_track)
+        db.commit()
+        
+        return {"message": "Track added to playlist successfully"}
+    finally:
+        db.close()
+
+@app.put("/playlists/{playlist_id}/tracks")
+def update_playlist_tracks(playlist_id: int, request: PlaylistUpdateTracksRequest):
+    """Atualiza as posições de todas as tracks em uma playlist (para drag-and-drop)"""
+    db = SessionLocal()
+    try:
+        # Verifica se a playlist existe
+        playlist = db.query(Playlist).filter(Playlist.id == playlist_id).first()
+        if not playlist:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        
+        # Remove todas as tracks existentes da playlist
+        db.query(PlaylistTrack).filter(PlaylistTrack.playlist_id == playlist_id).delete()
+        
+        # Adiciona as tracks com as novas posições
+        for track_data in request.tracks:
+            playlist_track = PlaylistTrack(
+                playlist_id=playlist_id,
+                track_id=track_data["track_id"],
+                position=track_data["position"]
+            )
+            db.add(playlist_track)
+        
+        db.commit()
+        return {"message": "Playlist tracks updated successfully"}
+    finally:
+        db.close()
+
+@app.delete("/playlists/{playlist_id}/tracks/{track_id}")
+def remove_track_from_playlist(playlist_id: int, track_id: int):
+    """Remove uma track específica de uma playlist"""
+    db = SessionLocal()
+    try:
+        # Encontra a track na playlist
+        playlist_track = db.query(PlaylistTrack).filter(
+            PlaylistTrack.playlist_id == playlist_id,
+            PlaylistTrack.track_id == track_id
+        ).first()
+        
+        if not playlist_track:
+            raise HTTPException(status_code=404, detail="Track not found in playlist")
+        
+        # Remove a track
+        removed_position = playlist_track.position
+        db.delete(playlist_track)
+        
+        # Atualiza as posições das tracks subsequentes
+        subsequent_tracks = db.query(PlaylistTrack).filter(
+            PlaylistTrack.playlist_id == playlist_id,
+            PlaylistTrack.position > removed_position
+        ).all()
+        
+        for track in subsequent_tracks:
+            track.position -= 1
+        
+        db.commit()
+        return {"message": "Track removed from playlist successfully"}
+    finally:
+        db.close()
+
+@app.delete("/playlists/{playlist_id}")
+def delete_playlist(playlist_id: int):
+    """Deleta uma playlist e todas suas tracks"""
+    db = SessionLocal()
+    try:
+        playlist = db.query(Playlist).filter(Playlist.id == playlist_id).first()
+        if not playlist:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        
+        # O cascade="all, delete-orphan" no relacionamento vai deletar as PlaylistTracks automaticamente
+        db.delete(playlist)
+        db.commit()
+        return {"message": "Playlist deleted successfully"}
+    finally:
+        db.close()
 
 @app.get("/stream/{track_id}")
 def stream_track(track_id: int, request: Request):

@@ -1429,6 +1429,246 @@ body.modern-layout {
   font-size: 0.8rem;
 }
 
+/* Playlist Styles */
+.playlists-section {
+  flex-shrink: 0;
+}
+
+.playlist-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.playlist-item {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem;
+  border-radius: var(--border-radius);
+  transition: background-color var(--transition-fast);
+  cursor: pointer;
+  margin-bottom: 0.5rem;
+}
+
+.playlist-item:hover {
+  background: var(--hover-bg);
+}
+
+.playlist-item-icon {
+  width: 40px;
+  height: 40px;
+  background: var(--card-bg);
+  border-radius: var(--border-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 0.75rem;
+  color: var(--primary-color);
+}
+
+.playlist-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.playlist-item-title {
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playlist-item-meta {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.playlist-item-actions {
+  display: flex;
+  gap: 0.5rem;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.playlist-item:hover .playlist-item-actions {
+  opacity: 1;
+}
+
+.playlist-action-btn {
+  padding: 0.5rem;
+  border-radius: var(--border-radius);
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+}
+
+.playlist-action-btn:hover {
+  background: var(--hover-bg);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* Playlist Select Modal Styles */
+.playlist-select-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.playlist-select-item {
+  display: flex;
+  align-items: center;
+  justify-content: between;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  margin-bottom: 0.75rem;
+  transition: all var(--transition-fast);
+}
+
+.playlist-select-item:hover {
+  background: var(--hover-bg);
+  border-color: var(--primary-color);
+}
+
+.playlist-select-info {
+  flex: 1;
+  margin-right: 1rem;
+}
+
+.playlist-select-title {
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.25rem;
+}
+
+.playlist-select-meta {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+/* Updated Queue Styles for Playlist Integration */
+.queue-item.current-track {
+  background: rgba(29, 185, 84, 0.1);
+  border-left: 3px solid var(--primary-color);
+}
+
+.queue-item-index {
+  width: 30px;
+  text-align: center;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.queue-item.current-track .queue-item-index {
+  color: var(--primary-color);
+}
+
+/* Chat Message Styles */
+.chat-message {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  border-radius: var(--border-radius);
+  background: var(--card-bg);
+}
+
+.chat-message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.chat-author {
+  font-weight: 500;
+  color: var(--primary-color);
+}
+
+.chat-timestamp {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.chat-message-text {
+  color: var(--text-primary);
+  word-wrap: break-word;
+}
+
+/* Connection Indicator Updates */
+.connection-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  transition: color var(--transition-fast);
+}
+
+.connection-indicator.connected i {
+  color: var(--success-color);
+}
+
+.connection-indicator.disconnected i {
+  color: var(--danger-color);
+}
+
+/* Party Play Playlist Button */
+.play-playlist-btn {
+  margin-right: 0.75rem;
+}
+
+/* Toast Enhancements */
+.toast-container {
+  z-index: 9999;
+}
+
+/* Enhanced Library Item for Dropdown */
+.library-item-actions .dropdown-menu {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-lg);
+}
+
+.library-item-actions .dropdown-item {
+  color: var(--text-primary);
+  padding: 0.75rem 1rem;
+  transition: background-color var(--transition-fast);
+}
+
+.library-item-actions .dropdown-item:hover {
+  background: var(--hover-bg);
+  color: var(--text-primary);
+}
+
+.library-item-actions .dropdown-item i {
+  margin-right: 0.5rem;
+  color: var(--text-muted);
+}
+
+/* Mobile Responsive Enhancements */
+@media (max-width: 768px) {
+  .playlist-item-actions {
+    opacity: 1; /* Always show on mobile */
+  }
+  
+  .playlist-action-btn,
+  .library-action-btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  .playlist-select-item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+  
+  .playlist-select-info {
+    margin-right: 0;
+  }
+}
+
 /* Debug Info */
 .debug-info {
   font-size: 0.75rem;
