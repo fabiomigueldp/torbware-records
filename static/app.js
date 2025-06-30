@@ -249,13 +249,16 @@ function handlePartySync(party) {
 
     if (party.mode === 'host') {
         if (party.host_id === userId) {
-            console.log('👑 HOST MODE: Você é o host');
+            console.log('👑 HOST MODE: Você é o host - NÃO aplicando sync');
             
+            // Host nunca recebe sync de suas próprias ações
+            // Apenas muda música se necessário
             if (party.track_id && party.track_id !== getCurrentTrackId()) {
                 console.log('🎵 Host: Mudando música:', party.track_id);
                 loadTrack(party.track_id);
             }
             
+            // Host mantém seu próprio interval de sync para os membros
             if (!hostSyncInterval) {
                 hostSyncInterval = setInterval(() => {
                     if (ws && ws.readyState === WebSocket.OPEN && !isSyncing) {
@@ -267,7 +270,7 @@ function handlePartySync(party) {
                 }, 1000);
             }
         } else {
-            console.log('👥 HOST MODE: Você é membro');
+            console.log('👥 HOST MODE: Você é membro - aplicando sync do host');
             // Check if we have a recent action to avoid conflict with sync
             const hasRecentAction = (Date.now() - lastPlayerAction) < 2000; // 2 second protection
             
@@ -654,7 +657,7 @@ function renderPartyMembers(members, hostId) {
 function updatePlayerControls(enabled) {
     const canControl = enabled || !currentPartyId;
     
-    console.log('🎮 Atualizando controles:', { 
+    console.log('🎮 Atualizando controles do player:', { 
         enabled, 
         currentPartyId, 
         canControl,
@@ -665,29 +668,37 @@ function updatePlayerControls(enabled) {
     if (canControl) {
         playerControls.classList.remove('disabled');
         
-        if (playPauseBtn) playPauseBtn.disabled = false;
+        if (playPauseBtn) {
+            playPauseBtn.disabled = false;
+            console.log('✅ Play/Pause button habilitado');
+        }
         if (prevBtn) prevBtn.disabled = false;
         if (nextBtn) nextBtn.disabled = false;
         if (progressBar) {
             progressBar.style.pointerEvents = 'auto';
             progressBar.style.cursor = 'pointer';
+            console.log('✅ Progress bar habilitada para interação');
         }
         if (volumeRange) volumeRange.disabled = false;
         
-        console.log('✅ Controles habilitados');
+        console.log('✅ Controles habilitados para o usuário');
     } else {
         playerControls.classList.add('disabled');
         
-        if (playPauseBtn) playPauseBtn.disabled = true;
+        if (playPauseBtn) {
+            playPauseBtn.disabled = true;
+            console.log('🚫 Play/Pause button desabilitado');
+        }
         if (prevBtn) prevBtn.disabled = true;
         if (nextBtn) nextBtn.disabled = true;
         if (progressBar) {
             progressBar.style.pointerEvents = 'none';
             progressBar.style.cursor = 'not-allowed';
+            console.log('🚫 Progress bar desabilitada para interação');
         }
         if (volumeRange) volumeRange.disabled = true;
         
-        console.log('🚫 Controles desabilitados');
+        console.log('🚫 Controles desabilitados para o usuário');
     }
 }
 
@@ -825,6 +836,7 @@ function seekToTime(time) {
     
     const clampedTime = Math.max(0, Math.min(player.duration, time));
     console.log(`🎯 Seeking to time: ${formatTime(clampedTime)}`);
+    console.log('🎯 Party state:', { currentPartyId, isHost, currentPartyMode });
     
     if (currentPartyId) {
         const canControl = isHost || currentPartyMode === 'democratic';
@@ -833,12 +845,15 @@ function seekToTime(time) {
         if (canControl) {
             // Mark the action timestamp BEFORE applying the seek
             lastPlayerAction = Date.now();
+            console.log('⏰ lastPlayerAction updated to:', lastPlayerAction);
             
             // Apply seek immediately for better UX
             player.currentTime = clampedTime;
+            console.log('🎯 Seek applied locally to player');
             
             // Send seek action to server after a small delay to ensure local change is applied
             setTimeout(() => {
+                console.log('📤 Sending player_action seek to server');
                 sendMessage('player_action', { 
                     action: 'seek', 
                     currentTime: clampedTime 
@@ -1515,8 +1530,10 @@ function setupEventListeners() {
             
             if (!isSyncing && currentPartyId) {
                 const canControl = isHost || currentPartyMode === 'democratic';
+                console.log('▶️ Play event - canControl:', canControl, 'isHost:', isHost, 'mode:', currentPartyMode);
                 if (canControl) {
                     lastPlayerAction = Date.now();
+                    console.log('📤 Sending play action to server');
                     sendMessage('player_action', { action: 'play' });
                 }
             }
@@ -1527,8 +1544,10 @@ function setupEventListeners() {
             
             if (!isSyncing && currentPartyId) {
                 const canControl = isHost || currentPartyMode === 'democratic';
+                console.log('⏸️ Pause event - canControl:', canControl, 'isHost:', isHost, 'mode:', currentPartyMode);
                 if (canControl) {
                     lastPlayerAction = Date.now();
+                    console.log('📤 Sending pause action to server');
                     sendMessage('player_action', { action: 'pause' });
                 }
             }
@@ -1634,7 +1653,7 @@ function setupEventListeners() {
             const percentage = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
             const newTime = percentage * player.duration;
             
-            console.log(`🎯 Click seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%)`);
+            console.log(`🎯 Click seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%) - Event listener executado`);
             console.log('🎯 Current party state:', { currentPartyId, isHost, currentPartyMode });
             
             // Add loading state to button
