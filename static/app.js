@@ -37,6 +37,8 @@ let isMuted = false;
 let currentQueue = [];
 let libraryData = [];
 let filteredLibrary = [];
+let currentTrackId = null;
+let currentTrackData = null;
 
 // --- DOM Elements ---
 let nameModal = null;
@@ -335,41 +337,61 @@ function applySyncUpdate(party, gentle = false) {
     console.log(`🔄 Aplicando sync ${gentle ? '(gentle)' : '(forceful)'}:`, {
         track_id: party.track_id,
         currentTime: party.currentTime,
-        is_playing: party.is_playing
+        is_playing: party.is_playing,
+        currentPlayerTime: player.currentTime,
+        currentPlayerPaused: player.paused
     });
 
     try {
+        // Change track if needed
         if (party.track_id && party.track_id !== getCurrentTrackId()) {
+            console.log('🎵 Sync: Mudando música:', party.track_id);
             loadTrack(party.track_id);
         }
 
+        // Calculate time difference and tolerance
         const timeTolerance = gentle ? 4.0 : 1.5;
         const timeDifference = Math.abs(player.currentTime - party.currentTime);
         
-        // Additional protection: if there was a recent player action, be more conservative
-        const hasVeryRecentAction = (Date.now() - lastPlayerAction) < 1000; // 1 second protection
-        const effectiveTolerance = hasVeryRecentAction ? timeTolerance * 2 : timeTolerance;
+        // Protection against recent actions - be more conservative
+        const timeSinceAction = Date.now() - lastPlayerAction;
+        const hasVeryRecentAction = timeSinceAction < 1500; // 1.5 second protection
+        const effectiveTolerance = hasVeryRecentAction ? timeTolerance * 3 : timeTolerance;
         
+        console.log(`⏰ Time analysis: diff=${timeDifference.toFixed(2)}s, tolerance=${effectiveTolerance.toFixed(1)}s, timeSinceAction=${timeSinceAction}ms`);
+        
+        // Only sync time if significant difference and no recent action
         if (party.track_id && timeDifference > effectiveTolerance) {
-            console.log(`⏰ Ajustando tempo: ${timeDifference.toFixed(2)}s (tolerância: ${effectiveTolerance.toFixed(1)}s)`);
-            
-            // Additional check: if this is a very recent action and the time difference is small, skip it
-            if (hasVeryRecentAction && timeDifference < 5.0) {
-                console.log(`⏰ Pulando ajuste de tempo - ação muito recente (${timeDifference.toFixed(2)}s)`);
+            if (hasVeryRecentAction && timeDifference < 8.0) {
+                console.log(`⏰ SKIP: Ação muito recente (${timeSinceAction}ms) e diferença pequena (${timeDifference.toFixed(2)}s)`);
             } else {
+                console.log(`⏰ Ajustando tempo: ${player.currentTime.toFixed(2)}s -> ${party.currentTime.toFixed(2)}s`);
                 player.currentTime = party.currentTime;
             }
+        } else {
+            console.log(`⏰ Tempo OK: diferença ${timeDifference.toFixed(2)}s dentro da tolerância`);
         }
 
-        if (party.is_playing && player.paused) {
-            console.log('▶️ Iniciando reprodução (sync)');
-            player.play().catch(e => {
-                console.warn("Autoplay prevented:", e);
-                showNotification('Clique no player para iniciar', 'info');
-            });
-        } else if (!party.is_playing && !player.paused) {
-            console.log('⏸️ Pausando reprodução (sync)');
-            player.pause();
+        // Sync play/pause state - be more careful with recent actions
+        const playStateDifferent = (party.is_playing && player.paused) || (!party.is_playing && !player.paused);
+        
+        if (playStateDifferent) {
+            if (hasVeryRecentAction) {
+                console.log(`▶️⏸️ SKIP: Estado de reprodução - ação muito recente (${timeSinceAction}ms)`);
+            } else {
+                if (party.is_playing && player.paused) {
+                    console.log('▶️ Iniciando reprodução (sync)');
+                    player.play().catch(e => {
+                        console.warn("Autoplay prevented:", e);
+                        showNotification('Clique no player para iniciar', 'info');
+                    });
+                } else if (!party.is_playing && !player.paused) {
+                    console.log('⏸️ Pausando reprodução (sync)');
+                    player.pause();
+                }
+            }
+        } else {
+            console.log('▶️⏸️ Estado de reprodução já sincronizado');
         }
         
     } catch (error) {
@@ -754,9 +776,6 @@ function updatePlayerStatus(mode) {
 }
 
 // --- Track Management Functions ---
-
-let currentTrackId = null;
-let currentTrackData = null;
 
 function getCurrentTrackId() {
     return currentTrackId;
@@ -1552,49 +1571,61 @@ function setupEventListeners() {
         player.addEventListener('play', () => {
             if (playPauseIcon) playPauseIcon.className = 'fas fa-pause';
             
-            if (!isSyncing && currentPartyId) {
-                const canControl = isHost || currentPartyMode === 'democratic';
-                console.log('▶️ Play event - canControl:', canControl, 'isHost:', isHost, 'mode:', currentPartyMode);
+            // Only send actions for non-hosts or if it's NOT from a sync update
+            if (!isSyncing && currentPartyId && !isHost) {
+                const canControl = currentPartyMode === 'democratic';
+                console.log('▶️ Play event (member) - canControl:', canControl, 'mode:', currentPartyMode);
                 if (canControl) {
                     lastPlayerAction = Date.now();
-                    console.log('📤 Sending play action to server');
-                    sendMessage('player_action', { action: 'play' });
+                    console.log('📤 Member sending play action to server');
+                    sendMessage('player_action', { 
+                        action: 'play',
+                        currentTime: player.currentTime 
+                    });
                 }
+            } else if (!isSyncing && currentPartyId && isHost) {
+                console.log('▶️ Play event (host) - não enviando ação (host controla diretamente)');
             }
         });
         
         player.addEventListener('pause', () => {
             if (playPauseIcon) playPauseIcon.className = 'fas fa-play';
             
-            if (!isSyncing && currentPartyId) {
-                const canControl = isHost || currentPartyMode === 'democratic';
-                console.log('⏸️ Pause event - canControl:', canControl, 'isHost:', isHost, 'mode:', currentPartyMode);
+            // Only send actions for non-hosts or if it's NOT from a sync update
+            if (!isSyncing && currentPartyId && !isHost) {
+                const canControl = currentPartyMode === 'democratic';
+                console.log('⏸️ Pause event (member) - canControl:', canControl, 'mode:', currentPartyMode);
                 if (canControl) {
                     lastPlayerAction = Date.now();
-                    console.log('📤 Sending pause action to server');
-                    sendMessage('player_action', { action: 'pause' });
+                    console.log('📤 Member sending pause action to server');
+                    sendMessage('player_action', { 
+                        action: 'pause',
+                        currentTime: player.currentTime 
+                    });
                 }
+            } else if (!isSyncing && currentPartyId && isHost) {
+                console.log('⏸️ Pause event (host) - não enviando ação (host controla diretamente)');
             }
         });
         
         player.addEventListener('timeupdate', updateProgress);
         
         player.addEventListener('seeking', () => {
-            if (!isSyncing && currentPartyId) {
-                const canControl = isHost || currentPartyMode === 'democratic';
-                if (canControl) {
-                    if (pendingSeek) clearTimeout(pendingSeek);
-                    
-                    const debounceTime = currentPartyMode === 'democratic' ? democraticDebounceTime : actionDebounceTime;
-                    pendingSeek = setTimeout(() => {
-                        lastPlayerAction = Date.now();
-                        sendMessage('player_action', { 
-                            action: 'seek', 
-                            currentTime: player.currentTime 
-                        });
-                        pendingSeek = null;
-                    }, debounceTime);
-                }
+            // Only send seeking actions for non-hosts during democratic mode
+            if (!isSyncing && currentPartyId && !isHost && currentPartyMode === 'democratic') {
+                console.log('🎯 Seeking event (member) - sending to server');
+                if (pendingSeek) clearTimeout(pendingSeek);
+                
+                pendingSeek = setTimeout(() => {
+                    lastPlayerAction = Date.now();
+                    sendMessage('player_action', { 
+                        action: 'seek', 
+                        currentTime: player.currentTime 
+                    });
+                    pendingSeek = null;
+                }, democraticDebounceTime);
+            } else if (!isSyncing && currentPartyId && isHost) {
+                console.log('🎯 Seeking event (host) - não enviando ação (host controla diretamente)');
             }
         });
         
