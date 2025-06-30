@@ -172,10 +172,44 @@ body.modern-layout {
   align-items: center;
   justify-content: center;
   z-index: 9999;
+  padding: 1rem;
 }
 
 .alternative-entry.show {
-  display: flex;
+  display: flex !important;
+}
+
+.alternative-entry .card {
+  max-width: 400px;
+  width: 100%;
+  margin: 0 auto;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+}
+
+/* Mobile specific improvements */
+@media (max-width: 768px) {
+  .alternative-entry {
+    padding: 0.5rem;
+  }
+  
+  .alternative-entry .card {
+    max-width: 90%;
+    margin: 0;
+  }
+  
+  .alternative-entry .card-body {
+    padding: 2rem 1.5rem;
+  }
+  
+  .alternative-entry .form-control {
+    font-size: 16px; /* Prevent zoom on iOS */
+    padding: 0.8rem;
+  }
+  
+  .alternative-entry .btn {
+    padding: 0.8rem 1.5rem;
+    font-size: 1rem;
+  }
 }
 
 /* Connection Status */

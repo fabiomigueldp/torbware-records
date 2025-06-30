@@ -23,7 +23,7 @@ let libraryData = [];
 let filteredLibrary = [];
 
 // --- DOM Elements ---
-const nameModal = new bootstrap.Modal(document.getElementById('nameModal'));
+let nameModal = null;
 const nameInput = document.getElementById('userNameInput');
 const joinButton = document.getElementById('joinButton');
 const alternativeJoinButton = document.getElementById('alternativeJoinButton');
@@ -90,9 +90,24 @@ const debugTimestamp = document.getElementById('debugTimestamp');
 
 // --- WebSocket Communication ---
 
+function getBaseURL() {
+    // Usa a variável definida no HTML ou constrói a URL
+    if (window.API_BASE_URL) {
+        return window.API_BASE_URL.replace(/\/$/, ''); // Remove trailing slash
+    }
+    
+    // Fallback para construir a URL manualmente
+    const protocol = window.location.protocol;
+    const host = window.location.host;
+    return `${protocol}//${host}`;
+}
+
 function connectWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${userId}`);
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/${userId}`;
+    
+    console.log('🔌 Conectando WebSocket:', wsUrl);
+    ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
         console.log('🔌 WebSocket connected');
@@ -550,7 +565,8 @@ function updateNowPlaying(party) {
 
 async function fetchTrackInfo(trackId) {
     try {
-        const response = await fetch(new URL(`/track/${trackId}`, window.API_BASE_URL));
+        const baseUrl = getBaseURL();
+        const response = await fetch(`${baseUrl}/track/${trackId}`);
         if (response.ok) {
             const trackData = await response.json();
             
@@ -698,10 +714,11 @@ async function loadTrack(trackId) {
         currentTrackData = track;
         
         // Update player source
-        const streamUrl = new URL(`/stream/${trackId}`, window.API_BASE_URL);
-        console.log('🎵 Setting player source:', streamUrl.toString());
+        const baseUrl = getBaseURL();
+        const streamUrl = `${baseUrl}/stream/${trackId}`;
+        console.log('🎵 Setting player source:', streamUrl);
         
-        player.src = streamUrl.toString();
+        player.src = streamUrl;
         
         // Update UI elements
         updateTrackDisplay(track);
@@ -835,7 +852,8 @@ function updateProgress() {
 
 async function fetchLibrary() {
     try {
-        const res = await fetch(new URL('/library', window.API_BASE_URL));
+        const baseUrl = getBaseURL();
+        const res = await fetch(`${baseUrl}/library`);
         if (!res.ok) throw new Error('Falha ao carregar biblioteca');
         
         libraryData = await res.json();
@@ -1013,6 +1031,7 @@ function clearQueue() {
 window.addEventListener('load', () => {
     console.log('🌐 Window loaded');
     console.log('📱 User Agent:', navigator.userAgent);
+    console.log('🌍 Base URL:', getBaseURL());
     
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     console.log('📱 Is Mobile:', isMobile);
@@ -1027,27 +1046,63 @@ window.addEventListener('load', () => {
         if (debugTimestamp) debugTimestamp.textContent = new Date().toISOString();
     }
     
-    initializeNameEntry(isMobile);
+    // Inicializar Bootstrap modal com verificação de erro
+    initializeModal(isMobile);
+    
+    // Configurar event listeners após um pequeno delay
+    setTimeout(() => {
+        setupEventListeners();
+    }, 300);
 });
+
+function initializeModal(isMobile) {
+    console.log('🚪 Inicializando modal...');
+    
+    try {
+        const modalElement = document.getElementById('nameModal');
+        if (modalElement && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            nameModal = new bootstrap.Modal(modalElement, {
+                backdrop: 'static',
+                keyboard: false
+            });
+            console.log('✅ Bootstrap Modal inicializado');
+            
+            // Tentar mostrar o modal após um delay
+            setTimeout(() => {
+                initializeNameEntry(isMobile);
+            }, 200);
+        } else {
+            console.warn('⚠️ Bootstrap Modal não disponível, usando entrada alternativa');
+            showAlternativeEntry();
+        }
+    } catch (error) {
+        console.error('❌ Erro ao inicializar modal:', error);
+        showAlternativeEntry();
+    }
+}
 
 function initializeNameEntry(isMobile) {
     console.log('🚪 Inicializando entrada de nome...');
     
-    setTimeout(() => {
-        try {
-            console.log('🚪 Tentando exibir modal...');
-            nameModal.show();
-            console.log('✅ Modal exibido com sucesso');
-            
-            if (isMobile) {
-                setupMobileFallback();
-            }
-            
-        } catch (error) {
-            console.error('❌ Erro ao exibir modal:', error);
-            showAlternativeEntry();
+    if (!nameModal) {
+        console.warn('⚠️ Modal não disponível, usando entrada alternativa');
+        showAlternativeEntry();
+        return;
+    }
+    
+    try {
+        console.log('🚪 Tentando exibir modal...');
+        nameModal.show();
+        console.log('✅ Modal exibido com sucesso');
+        
+        if (isMobile) {
+            setupMobileFallback();
         }
-    }, 200);
+        
+    } catch (error) {
+        console.error('❌ Erro ao exibir modal:', error);
+        showAlternativeEntry();
+    }
 }
 
 function setupMobileFallback() {
@@ -1115,24 +1170,42 @@ if (alternativeNameInput) {
 function showAlternativeEntry() {
     console.log('🔧 Mostrando entrada alternativa');
     
-    const modalElement = document.getElementById('nameModal');
-    modalElement.style.display = 'none';
-    modalElement.classList.remove('show');
-    
-    const backdrops = document.querySelectorAll('.modal-backdrop');
-    backdrops.forEach(backdrop => backdrop.remove());
-    
-    document.body.classList.remove('modal-open');
-    document.body.style.overflow = '';
-    document.body.style.paddingRight = '';
-    
-    alternativeEntry.classList.remove('d-none');
-    alternativeEntry.classList.add('show');
-    alternativeEntry.style.display = 'flex';
-    
-    setTimeout(() => {
-        if (alternativeNameInput) alternativeNameInput.focus();
-    }, 100);
+    try {
+        // Esconder modal se estiver visível
+        const modalElement = document.getElementById('nameModal');
+        if (modalElement) {
+            modalElement.style.display = 'none';
+            modalElement.classList.remove('show');
+        }
+        
+        // Remover backdrops do Bootstrap
+        const backdrops = document.querySelectorAll('.modal-backdrop');
+        backdrops.forEach(backdrop => backdrop.remove());
+        
+        // Limpar classes do body
+        document.body.classList.remove('modal-open');
+        document.body.style.overflow = '';
+        document.body.style.paddingRight = '';
+        
+        // Mostrar entrada alternativa
+        if (alternativeEntry) {
+            alternativeEntry.classList.remove('d-none');
+            alternativeEntry.classList.add('show');
+            alternativeEntry.style.display = 'flex';
+            
+            // Focar no input após um delay
+            setTimeout(() => {
+                if (alternativeNameInput) {
+                    alternativeNameInput.focus();
+                    alternativeNameInput.select();
+                }
+            }, 100);
+        }
+        
+        console.log('✅ Entrada alternativa exibida');
+    } catch (error) {
+        console.error('❌ Erro ao mostrar entrada alternativa:', error);
+    }
 }
 
 function hideAlternativeEntry() {
@@ -1709,7 +1782,8 @@ function setupEventListeners() {
             }
 
             try {
-                const res = await fetch(new URL('/upload', window.API_BASE_URL), { 
+                const baseUrl = getBaseURL();
+                const res = await fetch(`${baseUrl}/upload`, { 
                     method: 'POST', 
                     body: formData 
                 });
