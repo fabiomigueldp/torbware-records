@@ -227,11 +227,12 @@
                 <!-- Party Tabs -->
                 <div class="party-tabs">
                     <ul class="nav nav-tabs modern-tabs" role="tablist">
-                        <li class="nav-item">
-                            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#queueTab">
-                                <i class="fas fa-list-ol"></i> Fila de Reprodução
+                        <!-- Queue Tab (original location, will be hidden or removed by JS if sidebar queue is preferred) -->
+                        <!-- <li class="nav-item" id="mainContentQueueTabItem">
+                            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#mainContentQueueTabPanel">
+                                <i class="fas fa-list-ol"></i> Fila de Reprodução (Party)
                             </button>
-                        </li>
+                        </li> -->
                         <li class="nav-item">
                             <button class="nav-link" data-bs-toggle="tab" data-bs-target="#membersTab">
                                 <i class="fas fa-users"></i> Membros
@@ -250,27 +251,27 @@
                     </ul>
 
                     <div class="tab-content modern-tab-content">
-                        <!-- Queue Tab -->
-                        <div class="tab-pane fade show active" id="queueTab">
+                        <!-- Main Content Queue Tab Panel (original location, will be hidden or removed by JS) -->
+                        <!-- <div class="tab-pane fade show active" id="mainContentQueueTabPanel" role="tabpanel">
                             <div class="queue-section">
                                 <div class="queue-header">
-                                    <h6>Próximas músicas</h6>
-                                    <button class="btn btn-sm btn-outline-secondary clear-queue-btn">
+                                    <h6>Próximas músicas (Party View - Deprecated Location)</h6>
+                                    <button class="btn btn-sm btn-outline-secondary clear-queue-btn" onclick="clearQueue()">
                                         <i class="fas fa-trash"></i> Limpar
                                     </button>
                                 </div>
-                                <div id="queueList" class="queue-list">
-                                    <div class="empty-state">
+                                <div id="partyViewQueueList" class="queue-list">
+                                     <div class="empty-state">
                                         <i class="fas fa-list-ul"></i>
-                                        <p>A fila está vazia</p>
-                                        <small>Adicione músicas da biblioteca</small>
+                                        <p>A fila da festa aparecerá aqui.</p>
+                                        <small>Esta área será movida ou removida.</small>
                                     </div>
                                 </div>
                             </div>
-                        </div>
+                        </div> -->
 
-                        <!-- Members Tab -->
-                        <div class="tab-pane fade" id="membersTab">
+                        <!-- Members Tab - ensure it's active if queue tab is removed from here -->
+                        <div class="tab-pane fade show active" id="membersTab">
                             <div class="members-section">
                                 <div id="partyMemberList" class="members-list">
                                     <!-- Members will be populated here -->
@@ -330,28 +331,59 @@
             </div>
         </div>
 
-        <!-- Right Sidebar: Social Context -->
+        <!-- Right Sidebar: Queue & Social Context -->
         <aside class="sidebar sidebar-right">
-            <div class="sidebar-header">
-                <h6 class="sidebar-title">
-                    <i class="fas fa-users"></i> Online
-                </h6>
-                <span class="user-count" id="userCount">0</span>
-            </div>
-            
-            <div class="users-section">
-                <div id="userList" class="users-list">
-                    <div class="loading-state">
-                        <i class="fas fa-spinner fa-spin"></i>
-                        <span>Conectando...</span>
+            <!-- Tabs for Queue and Users -->
+            <ul class="nav nav-tabs modern-tabs nav-fill" id="sidebarRightTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="sidebar-queue-tab" data-bs-toggle="tab" data-bs-target="#sidebar-queue-content" type="button" role="tab" aria-controls="sidebar-queue-content" aria-selected="true">
+                        <i class="fas fa-list-ol"></i> Fila
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="sidebar-users-tab" data-bs-toggle="tab" data-bs-target="#sidebar-users-content" type="button" role="tab" aria-controls="sidebar-users-content" aria-selected="false">
+                        <i class="fas fa-users"></i> Online (<span id="userCount" class="user-count-inline">0</span>)
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="sidebarRightTabContent" style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+                <!-- Queue Content -->
+                <div class="tab-pane fade show active" id="sidebar-queue-content" role="tabpanel" aria-labelledby="sidebar-queue-tab" style="height: 100%; display: flex; flex-direction: column;">
+                    <div class="queue-section" style="flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 1rem;">
+                        <div class="queue-header">
+                            <h6>Fila de Reprodução</h6>
+                            <button class="btn btn-sm btn-outline-secondary clear-queue-btn" onclick="clearQueue()">
+                                <i class="fas fa-trash"></i> Limpar
+                            </button>
+                        </div>
+                        <div id="queueList" class="queue-list" style="flex: 1; overflow-y: auto;">
+                            <!-- Queue items will be rendered here by JavaScript -->
+                             <div class="empty-state">
+                                <i class="fas fa-list-ol"></i>
+                                <p>A fila está vazia</p>
+                                <small>Adicione músicas da biblioteca.</small>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="social-actions">
-                <button class="btn btn-success w-100 create-party-sidebar-btn" onclick="document.getElementById('createPartyBtn').click()">
-                    <i class="fas fa-plus"></i> Nova Festa
-                </button>
+                <!-- Users Content -->
+                <div class="tab-pane fade" id="sidebar-users-content" role="tabpanel" aria-labelledby="sidebar-users-tab" style="height: 100%; display: flex; flex-direction: column;">
+                    <div class="users-section" style="flex:1; overflow:hidden; padding: 1rem 0;">
+                        <div id="userList" class="users-list" style="height: 100%; overflow-y: auto; padding: 0 1rem;">
+                            <div class="loading-state">
+                                <i class="fas fa-spinner fa-spin"></i>
+                                <span>Conectando...</span>
+                            </div>
+                        </div>
+                    </div>
+                     <div class="social-actions p-3 border-top border-secondary">
+                        <button class="btn btn-success w-100 create-party-sidebar-btn" onclick="document.getElementById('createPartyBtn').click()">
+                            <i class="fas fa-plus"></i> Nova Festa
+                        </button>
+                    </div>
+                </div>
             </div>
         </aside>
     </main>
@@ -364,14 +396,20 @@
             
             <!-- Player Controls -->
             <div class="player-controls" id="playerControls">
-                <button class="control-btn play-pause-btn" id="playPauseBtn">
-                    <i class="fas fa-play" id="playPauseIcon"></i>
+                <button class="control-btn" id="shuffleBtn" title="Shuffle">
+                    <i class="fas fa-random"></i>
                 </button>
-                <button class="control-btn prev-btn" id="prevBtn">
+                <button class="control-btn prev-btn" id="prevBtn" title="Previous">
                     <i class="fas fa-step-backward"></i>
                 </button>
-                <button class="control-btn next-btn" id="nextBtn">
+                <button class="control-btn play-pause-btn" id="playPauseBtn" title="Play/Pause">
+                    <i class="fas fa-play" id="playPauseIcon"></i>
+                </button>
+                <button class="control-btn next-btn" id="nextBtn" title="Next">
                     <i class="fas fa-step-forward"></i>
+                </button>
+                <button class="control-btn" id="repeatBtn" title="Repeat">
+                    <i class="fas fa-repeat"></i>
                 </button>
             </div>
 

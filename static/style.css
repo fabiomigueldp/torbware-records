@@ -1125,7 +1125,8 @@ body.modern-layout {
   font-size: 0.8rem;
   color: var(--text-muted);
   font-weight: 500;
-  min-width: 40px;
+  min-width: 35px; /* Slightly reduce min-width */
+  text-align: center;
   transition: var(--transition-fast);
 }
 
@@ -1288,7 +1289,7 @@ body.modern-layout {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  min-width: 120px;
+  min-width: 100px; /* Slightly reduce for tighter layout */
 }
 
 .volume-btn {
@@ -1975,4 +1976,88 @@ body.modern-layout {
 
 .danger-zone h6 {
     color: var(--danger-color);
+}
+
+/* Styling for active shuffle/repeat buttons */
+.player-controls .control-btn.active {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+    background-color: rgba(29, 185, 84, 0.1); /* Light green background */
+}
+
+.player-controls .control-btn#repeatBtn.repeat-one i {
+    /* If you use a specific icon for repeat-one like fas-fa-repeat-1-alt,
+       it might already look distinct. This is a fallback or enhancement. */
+    position: relative;
+}
+
+/* User count in sidebar tab */
+.user-count-inline {
+    font-weight: normal;
+    color: var(--text-secondary);
+    /* background: none;
+    padding: 0; */
+}
+
+/* Ensure sidebar tab content takes full height */
+.sidebar .tab-content, .sidebar .tab-pane {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.sidebar .users-section, .sidebar .queue-section {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.sidebar .users-list, .sidebar .queue-list {
+    flex-grow: 1;
+    overflow-y: auto;
+}
+
+/* Styling for queue items in the new sidebar location */
+#sidebar-queue-content .queue-item {
+    background: transparent; /* Match sidebar background */
+    border: none;
+    border-bottom: 1px solid var(--border-color); /* Separator */
+    border-radius: 0; /* No rounded corners for list items */
+    padding: 0.6rem 0.2rem; /* Adjust padding */
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+#sidebar-queue-content .queue-item:hover {
+    background: var(--hover-bg);
+}
+#sidebar-queue-content .queue-item.current-track {
+    background: rgba(29, 185, 84, 0.15); /* Highlight current track */
+    color: var(--primary-color);
+    font-weight: 600;
+}
+#sidebar-queue-content .queue-item-info {
+    flex-grow: 1;
+}
+#sidebar-queue-content .queue-item-title {
+     color: var(--text-primary); /* Ensure title is readable */
+}
+#sidebar-queue-content .queue-item-meta {
+    font-size: 0.75rem;
+}
+#sidebar-queue-content .queue-item-actions .btn {
+    color: var(--text-muted);
+    padding: 0.25rem 0.4rem;
+}
+#sidebar-queue-content .queue-item-actions .btn:hover {
+    color: var(--danger-color);
+}
+
+#sidebar-queue-content .queue-header {
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+#sidebar-queue-content .clear-queue-btn {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
 }
