@@ -10,6 +10,7 @@ class Track(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     filename = Column(String, unique=True, nullable=False)
+    source_url = Column(String, nullable=True)
 
 def init_db():
     Base.metadata.create_all(bind=engine)

@@ -12,9 +12,15 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.templating import Jinja2Templates
+from pydantic import BaseModel, HttpUrl
 
 from app.database import SessionLocal, Track, init_db
-from app.convert import convert_to_vorbis
+from app.convert import convert_to_aac
+from app.importer import import_from_youtube
+
+# --- Pydantic Models ---
+class URLImportRequest(BaseModel):
+    url: HttpUrl
 
 # --- Range Requests Support ---
 def range_requests_response(
@@ -390,7 +396,7 @@ async def upload_audio(file: UploadFile = File(...)):
     temp_path = os.path.join(MEDIA_DIR, file.filename)
     with open(temp_path, "wb") as buffer:
         buffer.write(await file.read())
-    output_path = convert_to_vorbis(temp_path, MEDIA_DIR)
+    output_path = convert_to_aac(temp_path, MEDIA_DIR)
     os.remove(temp_path)
     if output_path is None:
         raise HTTPException(status_code=500, detail="Conversion failed")
@@ -398,6 +404,23 @@ async def upload_audio(file: UploadFile = File(...)):
     track = Track(title=os.path.splitext(file.filename)[0], filename=os.path.basename(output_path))
     db.add(track); db.commit(); db.refresh(track); db.close()
     return {"id": track.id, "title": track.title}
+
+@app.post("/import_from_url")
+async def import_from_url(request: URLImportRequest):
+    """
+    Importa uma track do YouTube a partir de uma URL.
+    """
+    try:
+        # Importar track usando o módulo importer
+        track = import_from_youtube(str(request.url))
+        return {
+            "id": track.id, 
+            "title": track.title,
+            "filename": track.filename,
+            "source_url": track.source_url
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Falha na importação: {str(e)}")
 
 @app.get("/library")
 def get_library():

@@ -2167,6 +2167,52 @@ function setupEventListeners() {
         clearQueueBtn.addEventListener('click', clearQueue);
     }
     
+    // YouTube Import Controls
+    const importUrlBtn = document.getElementById('importUrlBtn');
+    const youtubeUrlInput = document.getElementById('youtubeUrlInput');
+    const importUrlStatus = document.getElementById('importUrlStatus');
+
+    if (importUrlBtn) {
+        importUrlBtn.addEventListener('click', async () => {
+            const url = youtubeUrlInput.value.trim();
+            if (!url) {
+                showNotification('Por favor, cole uma URL do YouTube.', 'warning');
+                return;
+            }
+
+            // UI Feedback
+            importUrlBtn.disabled = true;
+            importUrlBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Importando...';
+            importUrlStatus.textContent = `Importando track do YouTube...`;
+
+            try {
+                const response = await fetch(`${getBaseURL()}/import_from_url`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Falha na importação da track.');
+                }
+
+                const newTrack = await response.json();
+                showNotification(`Importada com sucesso: ${newTrack.title}`, 'success');
+                youtubeUrlInput.value = ''; // Clear input
+                fetchLibrary(); // Refresh library list
+
+            } catch (error) {
+                showNotification(error.message, 'error');
+            } finally {
+                // Reset UI
+                importUrlBtn.disabled = false;
+                importUrlBtn.innerHTML = '<i class="fas fa-download"></i> Importar';
+                importUrlStatus.textContent = '';
+            }
+        });
+    }
+    
     // Marcar como configurado para evitar múltiplas inicializações
     eventListenersSetup = true;
     console.log('✅ Event listeners configurados com sucesso!');
