@@ -8,13 +8,90 @@ from typing import Dict, List, Set
 from fastapi import (
     FastAPI, UploadFile, File, HTTPException, Request, WebSocket, WebSocketDisconnect
 )
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.templating import Jinja2Templates
 
 from app.database import SessionLocal, Track, init_db
 from app.convert import convert_to_vorbis
+
+# --- Range Requests Support ---
+def range_requests_response(
+    file_path: str, 
+    range_header: str = None, 
+    media_type: str = "audio/mpeg"
+):
+    """
+    Handles HTTP Range Requests for audio streaming.
+    This enables proper seeking in audio players by allowing partial content requests.
+    """
+    file_size = os.path.getsize(file_path)
+    
+    # If no range header, return the full file
+    if not range_header:
+        def iterfile():
+            with open(file_path, mode="rb") as file_like:
+                yield from file_like
+        
+        return StreamingResponse(
+            iterfile(), 
+            media_type=media_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+            }
+        )
+    
+    # Parse the range header (e.g., "bytes=0-1023")
+    try:
+        range_match = range_header.replace("bytes=", "")
+        range_start, range_end = range_match.split("-")
+        range_start = int(range_start) if range_start else 0
+        range_end = int(range_end) if range_end else file_size - 1
+        
+        # Ensure range is within file bounds
+        range_start = max(0, range_start)
+        range_end = min(file_size - 1, range_end)
+        content_length = range_end - range_start + 1
+        
+        def iterfile():
+            with open(file_path, mode="rb") as file_like:
+                file_like.seek(range_start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk_size = min(8192, remaining)  # 8KB chunks
+                    chunk = file_like.read(chunk_size)
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+        
+        return StreamingResponse(
+            iterfile(),
+            status_code=206,  # Partial Content
+            media_type=media_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+                "Content-Range": f"bytes {range_start}-{range_end}/{file_size}",
+            }
+        )
+        
+    except (ValueError, AttributeError):
+        # If range header is malformed, return full file
+        def iterfile():
+            with open(file_path, mode="rb") as file_like:
+                yield from file_like
+        
+        return StreamingResponse(
+            iterfile(), 
+            media_type=media_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+            }
+        )
 
 # --- App Setup ---
 MEDIA_DIR = "media"
@@ -330,13 +407,16 @@ def get_library():
     return [{"id": t.id, "title": t.title} for t in tracks]
 
 @app.get("/stream/{track_id}")
-def stream_track(track_id: int):
+def stream_track(track_id: int, request: Request):
     db = SessionLocal()
     track = db.query(Track).filter(Track.id == track_id).first()
     db.close()
-    if not track: raise HTTPException(status_code=404, detail="Track not found")
+    if not track: 
+        raise HTTPException(status_code=404, detail="Track not found")
+    
     file_path = os.path.join(MEDIA_DIR, track.filename)
-    if not os.path.exists(file_path): raise HTTPException(status_code=404, detail="File not found")
+    if not os.path.exists(file_path): 
+        raise HTTPException(status_code=404, detail="File not found")
     
     # Determine correct MIME type based on file extension
     file_ext = os.path.splitext(track.filename)[1].lower()
@@ -351,4 +431,7 @@ def stream_track(track_id: int):
     }
     media_type = mime_type_map.get(file_ext, 'audio/mpeg')  # Default to mp3
     
-    return FileResponse(file_path, media_type=media_type, filename=track.filename)
+    # Get Range header for partial content requests (enables seeking)
+    range_header = request.headers.get('range')
+    
+    return range_requests_response(file_path, range_header, media_type)
