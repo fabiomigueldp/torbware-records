@@ -47,6 +47,7 @@ let libraryData = [];
 let filteredLibrary = [];
 let currentTrackId = null;
 let currentTrackData = null;
+let eventListenersSetup = false; // Flag para evitar múltiplas inicializações
 
 // Playlist variables
 let userPlaylists = [];
@@ -188,12 +189,6 @@ function handleWebSocketMessage(message) {
         case 'party_sync':
             handlePartySync(message.payload);
             break;
-        case 'user_updated':
-            handleUserUpdated(message.payload);
-            break;
-        case 'user_deleted':
-            handleUserDeleted(message.payload);
-            break;
         case 'party_left':
             console.log('🚪 Party left confirmation');
             currentPartyId = null;
@@ -252,17 +247,6 @@ function handleWebSocketMessage(message) {
         default:
             console.log('❓ Unknown message type:', message.type);
     }
-}
-
-function handleUserUpdated(payload) {
-    // This is handled by the state_update broadcast, but we can add a specific notification
-    if (payload.id.toString() !== userId) {
-        showNotification(`O usuário ${payload.old_nickname || ''} agora é ${payload.new_nickname}`, 'info');
-    }
-}
-
-function handleUserDeleted(payload) {
-    showNotification(`O usuário com ID ${payload.id} foi desconectado.`, 'info');
 }
 
 function sendMessage(type, payload) {
@@ -393,6 +377,17 @@ function logout() {
 function handleStateUpdate(payload) {
     renderUserList(payload.users);
     renderPartyList(payload.parties);
+    
+    // Update party host name if currently in a party and host info changed
+    if (currentPartyId && payload.parties) {
+        const currentParty = payload.parties.find(p => p.party_id === currentPartyId);
+        if (currentParty && partyHostName) {
+            const hostUser = payload.users.find(u => u.id === currentParty.host_id);
+            if (hostUser) {
+                partyHostName.textContent = hostUser.name;
+            }
+        }
+    }
 }
 
 function handlePartySync(party) {
@@ -1820,135 +1815,7 @@ function handlePrevTrack() {
     }
 }
 
-function setupEventListeners() {
-    // Account Management
-    if (manageAccountBtn) {
-        manageAccountBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            console.log('🔧 Gerenciar Conta clicado');
-            openAccountModal();
-        });
-    } else {
-        console.error('❌ manageAccountBtn não encontrado!');
-    }
-    
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            console.log('🚪 Logout clicado');
-            logout();
-        });
-    } else {
-        console.error('❌ logoutBtn não encontrado!');
-    }
-    
-    if (updateNicknameBtn) {
-        updateNicknameBtn.addEventListener('click', updateNickname);
-    }
-    
-    if (initiateDeleteBtn) {
-        initiateDeleteBtn.addEventListener('click', initiateDeleteAccount);
-    }
-    
-    if (deleteNicknameConfirmInput) {
-        deleteNicknameConfirmInput.addEventListener('input', () => {
-            if (confirmDeleteBtn) {
-                confirmDeleteBtn.disabled = deleteNicknameConfirmInput.value !== userName;
-            }
-        });
-    }
-    
-    if (confirmDeleteBtn) {
-        confirmDeleteBtn.addEventListener('click', confirmDeleteAccount);
-    }
 
-    // Player
-    playPauseBtn.addEventListener('click', () => {
-        if (player.paused) {
-            player.play();
-        } else {
-            player.pause();
-        }
-    });
-    prevBtn.addEventListener('click', handlePrevTrack);
-    nextBtn.addEventListener('click', handleNextTrack);
-    player.addEventListener('timeupdate', updateProgress);
-    player.addEventListener('loadedmetadata', updateProgress);
-    progressBar.addEventListener('click', (e) => {
-        const rect = progressBar.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const width = rect.width;
-        const percentage = x / width;
-        seekToTime(player.duration * percentage);
-    });
-    volumeRange.addEventListener('input', (e) => {
-        const volume = e.target.value;
-        player.volume = volume / 100;
-        updateVolumeIcon(volume);
-    });
-
-    // Library and Playlists
-    librarySearch.addEventListener('input', (e) => filterLibrary(e.target.value));
-    document.getElementById('createPlaylistBtn').addEventListener('click', openCreatePlaylistModal);
-    document.getElementById('createPlaylistConfirmBtn').addEventListener('click', createPlaylist);
-
-    // Party
-    createPartyBtn.addEventListener('click', createParty);
-    leavePartyBtn.addEventListener('click', () => sendMessage('leave_party', {}));
-    democraticModeToggle.addEventListener('change', (e) => {
-        sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
-    });
-    sendChatBtn.addEventListener('click', sendChatMessage);
-    chatInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            sendChatMessage();
-        }
-    });
-    document.getElementById('playPlaylistBtn').addEventListener('click', openSelectPlaylistModal);
-
-    // Upload
-    uploadForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const formData = new FormData();
-        formData.append('file', audioFile.files[0]);
-        try {
-            const response = await fetch('/upload', {
-                method: 'POST',
-                body: formData
-            });
-            if (response.ok) {
-                showNotification('Upload concluído!', 'success');
-                fetchLibrary();
-            } else {
-                throw new Error('Upload failed');
-            }
-        } catch (error) {
-            showNotification('Erro no upload.', 'error');
-        }
-    });
-
-    // YouTube Import
-    document.getElementById('importUrlBtn').addEventListener('click', async () => {
-        const url = document.getElementById('youtubeUrlInput').value;
-        if (!url) return;
-        try {
-            const response = await fetch('/import_from_url', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url })
-            });
-            if (response.ok) {
-                showNotification('Importação do YouTube concluída!', 'success');
-                fetchLibrary();
-            } else {
-                const error = await response.json();
-                showNotification(error.detail || 'Erro na importação.', 'error');
-            }
-        } catch (error) {
-            showNotification('Erro na importação.', 'error');
-        }
-    });
-}
 
 // --- Initialization ---
 
@@ -2195,11 +2062,215 @@ document.addEventListener('DOMContentLoaded', () => {
             updateVolumeIcon(currentVolume);
         }
         
-        // Configurar event listeners
+        // Configurar event listeners integrados
         setupEventListeners();
         
         console.log('✅ Torbware Records inicializado!');
         showNotification('Bem-vindo ao Torbware Records!', 'success');
+    }
+    
+    // Event listeners setup function integrated within initializeApp scope
+    function setupEventListeners() {
+        console.log('🎮 Configurando event listeners...');
+        
+        // Account Management
+        if (manageAccountBtn) {
+            manageAccountBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                console.log('🔧 Gerenciar Conta clicado');
+                openAccountModal();
+            });
+        }
+        
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                console.log('🚪 Logout clicado');
+                logout();
+            });
+        }
+        
+        if (updateNicknameBtn) {
+            updateNicknameBtn.addEventListener('click', updateNickname);
+        }
+        
+        if (initiateDeleteBtn) {
+            initiateDeleteBtn.addEventListener('click', initiateDeleteAccount);
+        }
+        
+        if (deleteNicknameConfirmInput) {
+            deleteNicknameConfirmInput.addEventListener('input', () => {
+                if (confirmDeleteBtn) {
+                    confirmDeleteBtn.disabled = deleteNicknameConfirmInput.value !== userName;
+                }
+            });
+        }
+        
+        if (confirmDeleteBtn) {
+            confirmDeleteBtn.addEventListener('click', confirmDeleteAccount);
+        }
+
+        // Player Events
+        if (player) {
+            player.addEventListener('play', () => {
+                if (playPauseIcon) playPauseIcon.className = 'fas fa-pause';
+            });
+            
+            player.addEventListener('pause', () => {
+                if (playPauseIcon) playPauseIcon.className = 'fas fa-play';
+            });
+            
+            player.addEventListener('timeupdate', updateProgress);
+            player.addEventListener('loadedmetadata', updateProgress);
+            
+            player.addEventListener('canplay', () => {
+                if (progressBar) {
+                    progressBar.parentElement.classList.remove('loading');
+                }
+                
+                if (shouldAutoPlay) {
+                    player.play().catch(e => {
+                        console.warn("Autoplay failed:", e);
+                        showNotification('Clique para iniciar reprodução', 'warning');
+                    });
+                    shouldAutoPlay = false;
+                }
+            });
+        }
+
+        // Player Controls
+        if (playPauseBtn) {
+            playPauseBtn.addEventListener('click', () => {
+                if (player.paused) {
+                    player.play();
+                } else {
+                    player.pause();
+                }
+            });
+        }
+        
+        if (prevBtn) {
+            prevBtn.addEventListener('click', handlePrevTrack);
+        }
+        
+        if (nextBtn) {
+            nextBtn.addEventListener('click', handleNextTrack);
+        }
+        
+        if (progressBar) {
+            progressBar.addEventListener('click', (e) => {
+                const rect = progressBar.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const width = rect.width;
+                const percentage = x / width;
+                seekToTime(player.duration * percentage);
+            });
+        }
+        
+        if (volumeRange) {
+            volumeRange.addEventListener('input', (e) => {
+                const volume = e.target.value;
+                player.volume = volume / 100;
+                updateVolumeIcon(volume);
+            });
+        }
+
+        // Library and Playlists
+        if (librarySearch) {
+            librarySearch.addEventListener('input', (e) => filterLibrary(e.target.value));
+        }
+        
+        const createPlaylistBtn = document.getElementById('createPlaylistBtn');
+        if (createPlaylistBtn) {
+            createPlaylistBtn.addEventListener('click', openCreatePlaylistModal);
+        }
+        
+        const createPlaylistConfirmBtn = document.getElementById('createPlaylistConfirmBtn');
+        if (createPlaylistConfirmBtn) {
+            createPlaylistConfirmBtn.addEventListener('click', createPlaylist);
+        }
+
+        // Party
+        if (createPartyBtn) {
+            createPartyBtn.addEventListener('click', createParty);
+        }
+        
+        if (leavePartyBtn) {
+            leavePartyBtn.addEventListener('click', () => sendMessage('leave_party', {}));
+        }
+        
+        if (democraticModeToggle) {
+            democraticModeToggle.addEventListener('change', (e) => {
+                sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
+            });
+        }
+        
+        if (sendChatBtn) {
+            sendChatBtn.addEventListener('click', sendChatMessage);
+        }
+        
+        if (chatInput) {
+            chatInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    sendChatMessage();
+                }
+            });
+        }
+        
+        const playPlaylistBtn = document.getElementById('playPlaylistBtn');
+        if (playPlaylistBtn) {
+            playPlaylistBtn.addEventListener('click', openSelectPlaylistModal);
+        }
+
+        // Upload
+        if (uploadForm) {
+            uploadForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData();
+                formData.append('file', audioFile.files[0]);
+                try {
+                    const response = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    if (response.ok) {
+                        showNotification('Upload concluído!', 'success');
+                        fetchLibrary();
+                    } else {
+                        throw new Error('Upload failed');
+                    }
+                } catch (error) {
+                    showNotification('Erro no upload.', 'error');
+                }
+            });
+        }
+
+        // YouTube Import
+        const importUrlBtn = document.getElementById('importUrlBtn');
+        if (importUrlBtn) {
+            importUrlBtn.addEventListener('click', async () => {
+                const url = document.getElementById('youtubeUrlInput').value;
+                if (!url) return;
+                try {
+                    const response = await fetch('/import_from_url', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url })
+                    });
+                    if (response.ok) {
+                        showNotification('Importação do YouTube concluída!', 'success');
+                        fetchLibrary();
+                    } else {
+                        const error = await response.json();
+                        showNotification(error.detail || 'Erro na importação.', 'error');
+                    }
+                } catch (error) {
+                    showNotification('Erro na importação.', 'error');
+                }
+            });
+        }
+        
+        console.log('✅ Event listeners configurados com sucesso!');
     }
 });
 
@@ -2341,8 +2412,6 @@ function handleNextTrack() {
 
 // --- Event Listeners ---
 
-let eventListenersSetup = false; // Flag para evitar múltiplas inicializações
-
 function setupEventListeners() {
     // Prevenir múltiplas inicializações
     if (eventListenersSetup) {
@@ -2681,378 +2750,244 @@ function setupEventListeners() {
                 importUrlStatus.textContent = '';
             }
         });
-    }
-
-    // Marcar como configurado para evitar múltiplas inicializações
-    eventListenersSetup = true;
-    console.log('✅ Event listeners configurados com sucesso!');
-    }
-// --- Event Listeners Setup ---
-
-function setupEventListeners() {
-    // Prevenir múltiplas inicializações
-    if (eventListenersSetup) {
-        console.log('⚠️ Event listeners já configurados, pulando...');
-        return;
-    }
-    
-    console.log('🎮 Configurando event listeners...');
-    
-    // Player Events - Apenas visual, sem sincronização automática
-    if (player) {
-        player.addEventListener('play', () => {
-            if (playPauseIcon) playPauseIcon.className = 'fas fa-pause';
-            console.log('▶️ Play event - apenas atualização visual');
-        });
-        
-        player.addEventListener('pause', () => {
-            if (playPauseIcon) playPauseIcon.className = 'fas fa-play';
-            console.log('⏸️ Pause event - apenas atualização visual');
-        });
-        
-        player.addEventListener('timeupdate', updateProgress);
-        
-        // Remover seeking event listener automático para evitar loops
-        player.addEventListener('loadedmetadata', () => {
-            updateProgress();
-        });
-        
-        // Re-habilitar a barra de progresso quando o áudio estiver pronto para reprodução
-        player.addEventListener('canplay', () => {
-            if (progressBar) {
-                progressBar.parentElement.classList.remove('loading');
-                console.log('✅ Progress bar re-habilitada após carregamento do áudio');
-            }
-            
-            // SOLUÇÃO DEFINITIVA: Reprodução automática só quando o áudio está completamente carregado
-            if (shouldAutoPlay) {
-                console.log('🎵 Iniciando reprodução automática após carregamento completo');
-                player.play().catch(e => {
-                    console.warn("Autoplay failed:", e);
-                    showNotification('Clique para iniciar reprodução', 'warning');
-                });
-                shouldAutoPlay = false;
-            }
-        });
-    }
-
-    // Player Control Buttons
-    if (playPauseBtn) {
-        playPauseBtn.addEventListener('click', () => {
-            console.log('🎮 Play/Pause button clicked');
-            console.log('🎮 Current state:', { currentPartyId, isHost, currentPartyMode });
-            
-            // Sempre aplicar ação localmente primeiro para responsividade
-            lastPlayerAction = Date.now();
-            const action = player.paused ? 'play' : 'pause';
-            
-            if (player.paused) {
-                player.play().catch(e => console.warn("Play failed:", e));
-            } else {
-                player.pause();
-            }
-            
-            if (!currentPartyId) {
-                // MODO SOLO - Apenas controle local
-                console.log('🎧 SOLO: Play/Pause aplicado localmente');
-                showNotification(`${action === 'play' ? 'Reproduzindo' : 'Pausado'}`, 'success');
-                return;
-            }
-            
-            if (currentPartyMode === 'host') {
-                if (isHost) {
-                    // HOST EM MODO HOST - Controle total, não envia para servidor
-                    console.log('👑 HOST: Play/Pause aplicado com controle total');
-                    showNotification(`${action === 'play' ? 'Reproduzindo' : 'Pausado'} (host)`, 'success');
-                } else {
-                    // MEMBRO EM MODO HOST - Não pode controlar, reverter ação
-                    console.log('🚫 MEMBRO: Não pode controlar em modo host');
-                    showNotification('Apenas o host pode controlar o player', 'warning');
-                    // Reverter a ação
-                    if (action === 'play') {
-                        player.pause();
-                    } else {
-                        player.play().catch(e => console.warn("Play failed:", e));
-                    }
-                }
-            } else if (currentPartyMode === 'democratic') {
-                // MODO DEMOCRÁTICO - Todos podem controlar e sincronizam
-                console.log('🗳️ DEMOCRÁTICO: Enviando play/pause para sincronização');
-                
-                sendMessage('player_action', { 
-                    action: action,
-                    currentTime: player.currentTime 
-                });
-                
-                showNotification(`${action === 'play' ? 'Reproduzindo' : 'Pausado'} (democrático)`, 'success');
-            }
-        });
-    }
-
-    if (prevBtn) {
-        prevBtn.addEventListener('click', handlePrevTrack);
-    }
-
-    if (nextBtn) {
-        nextBtn.addEventListener('click', handleNextTrack);
-    }
-
-    // --- Progress Bar and Volume Events ---
-    if (progressBar) {
-        progressBar.addEventListener('click', (e) => {
-            const rect = progressBar.getBoundingClientRect();
-            const offsetX = e.clientX - rect.left;
-            const totalWidth = rect.width;
-            const clickPercentage = offsetX / totalWidth;
-            
-            const newTime = clickPercentage * player.duration;
-            seekToTime(newTime);
-        });
-        
-        // Adicionado para suporte a toque em dispositivos móveis
-        progressBar.addEventListener('touchend', (e) => {
-            const touch = e.changedTouches[0];
-            const rect = progressBar.getBoundingClientRect();
-            const offsetX = touch.clientX - rect.left;
-            const totalWidth = rect.width;
-            const clickPercentage = offsetX / totalWidth;
-            
-            const newTime = clickPercentage * player.duration;
-            seekToTime(newTime);
-        });
-    }
-
-    if (volumeRange) {
-        volumeRange.addEventListener('input', (e) => {
-            const newVolume = e.target.value;
-            player.volume = newVolume / 100;
-            currentVolume = newVolume;
-            updateVolumeIcon(newVolume);
-            
-            // Enviar nova configuração de volume para o servidor imediatamente
-            if (currentPartyId) {
-                sendMessage('player_action', { 
-                    action: 'set_volume', 
-                    volume: newVolume 
-                });
-            }
-        });
-    }
-
-    // Library Search
-    if (librarySearch) {
-        librarySearch.addEventListener('input', (e) => {
-            filterLibrary(e.target.value);
-        });
-    }
-
-    // Enhanced Party Controls
-    if (createPartyBtn) {
-        createPartyBtn.addEventListener('click', () => {
-            console.log('🎉 Create party button clicked');
-            createParty();
-        });
-    }
-
-    if (leavePartyBtn) {
-        leavePartyBtn.addEventListener('click', () => {
-            console.log('🚪 Leave party button clicked, currentPartyId:', currentPartyId);
-            
-            if (currentPartyId) {
-                if (confirm('Tem certeza que deseja sair da festa?')) {
-                    console.log('🚪 User confirmed leaving party');
-                    
-                    // Send leave message with party ID
-                    sendMessage('leave_party', { party_id: currentPartyId });
-                    showNotification('Saindo da festa...', 'info');
-                    
-                    // Force UI update in case WebSocket response is delayed
-                    setTimeout(() => {
-                        if (currentPartyId) {
-                            console.log('🚪 Forçando saída da festa na UI devido a timeout');
-                            forceLeaveParty();
-                        }
-                    }, 3000); // Reduzido para 3 segundos para resposta mais rápida
-                    
-                    // Disable button temporarily with loading state
-                    leavePartyBtn.disabled = true;
-                    leavePartyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saindo...';
-                    
-                    setTimeout(() => {
-                        if (leavePartyBtn && leavePartyBtn.disabled) {
-                            leavePartyBtn.disabled = false;
-                            leavePartyBtn.innerHTML = '<i class="fas fa-sign-out-alt"></i> Sair';
-                        }
-                    }, 3000);
-                } else {
-                    console.log('🚪 User cancelled leaving party');
-                }
-            } else {
-                console.log('🚪 Not in a party, cannot leave');
-                showNotification('Você não está em uma festa', 'warning');
-            }
-        });
-    }
-
-    if (democraticModeToggle) {
-        democraticModeToggle.addEventListener('change', (e) => {
-            if (isHost) {
-                sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
-                showNotification(
-                    e.target.checked ? 'Modo democrático ativado!' : 'Modo host ativado!', 
-                    'success'
-                );
-            }
-        });
-    }
-
-    // Chat
-    if (sendChatBtn) {
-        sendChatBtn.addEventListener('click', sendChatMessage);
-    }
-
-    if (chatInput) {
-        chatInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                sendChatMessage();
-            }
-        });
-    }
-
-    // Upload Form
-    if (uploadForm) {
-        uploadForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            if (!audioFile.files.length) {
-                showNotification('Selecione um arquivo de áudio', 'warning');
-                return;
-            }
-
-            const file = audioFile.files[0];
-            const maxSize = 50 * 1024 * 1024; // 50MB
-            if (file.size > maxSize) {
-                showNotification('Arquivo muito grande. Máximo: 50MB', 'error');
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('file', file);
-            
-            if (uploadStatus) {
-                uploadStatus.className = 'upload-status';
-                uploadStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fazendo upload...';
-            }
-
-            try {
-                const baseUrl = getBaseURL();
-                const res = await fetch(`${baseUrl}/upload`, { 
-                    method: 'POST', 
-                    body: formData 
-                });
-                
-                if (res.ok) {
-                    const result = await res.json();
-                    if (uploadStatus) {
-                        uploadStatus.innerHTML = `<i class="fas fa-check"></i> Upload realizado com sucesso! <strong>${result.title}</strong>`;
-                    }
-                    audioFile.value = '';
-                    fetchLibrary();
-                    showNotification('Música adicionada à biblioteca!', 'success');
-                    
-                    setTimeout(() => {
-                        if (uploadStatus) uploadStatus.innerHTML = '';
-                    }, 5000);
-                } else {
-                    const err = await res.json();
-                    throw new Error(err.detail || 'Erro no upload');
-                }
-            } catch (error) {
-                console.error('Upload error:', error);
-                if (uploadStatus) {
-                    uploadStatus.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Erro: ${error.message}`;
-                }
-                showNotification('Erro no upload', 'error');
-            }
-        });
-    }
-
-    // Queue Controls
-    const clearQueueBtn = document.querySelector('.clear-queue-btn');
-    if (clearQueueBtn) {
-        clearQueueBtn.addEventListener('click', clearQueue);
-    }
-    
-    // YouTube Import Controls
-    const importUrlBtn = document.getElementById('importUrlBtn');
-    const youtubeUrlInput = document.getElementById('youtubeUrlInput');
-    const importUrlStatus = document.getElementById('importUrlStatus');
-
-    if (importUrlBtn) {
-        importUrlBtn.addEventListener('click', async () => {
-            const url = youtubeUrlInput.value.trim();
-            if (!url) {
-                showNotification('Por favor, cole uma URL do YouTube.', 'warning');
-                return;
-            }
-
-            // UI Feedback
-            importUrlBtn.disabled = true;
-            importUrlBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Importando...';
-            importUrlStatus.textContent = `Importando track do YouTube...`;
-
-            try {
-                const response = await fetch(`${getBaseURL()}/import_from_url`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: url })
-                });
-
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail || 'Falha na importação da track.');
-                }
-
-                const newTrack = await response.json();
-                showNotification(`Importada com sucesso: ${newTrack.title}`, 'success');
-                youtubeUrlInput.value = ''; // Clear input
-                fetchLibrary(); // Refresh library list
-
-            } catch (error) {
-                showNotification(error.message, 'error');
-            } finally {
-                // Reset UI
-                importUrlBtn.disabled = false;
-                importUrlBtn.innerHTML = '<i class="fas fa-download"></i> Importar';
-                importUrlStatus.textContent = '';
-            }
-        });
-    }
-
-    // Playlist Controls
-    const createPlaylistBtn = document.getElementById('createPlaylistBtn');
-    const createPlaylistConfirmBtn = document.getElementById('createPlaylistConfirmBtn');
-    const playPlaylistBtn = document.getElementById('playPlaylistBtn');
-    
-    if (createPlaylistBtn) {
-        createPlaylistBtn.addEventListener('click', openCreatePlaylistModal);
-        console.log('✅ Event listener adicionado ao createPlaylistBtn');
-    }
-    
-    if (createPlaylistConfirmBtn) {
-        createPlaylistConfirmBtn.addEventListener('click', createPlaylist);
-        console.log('✅ Event listener adicionado ao createPlaylistConfirmBtn');
-    }
-    
-    if (playPlaylistBtn) {
-        playPlaylistBtn.addEventListener('click', openSelectPlaylistModal);
-        console.log('✅ Event listener adicionado ao playPlaylistBtn');
     }
 
     // Marcar como configurado para evitar múltiplas inicializações
     eventListenersSetup = true;
     console.log('✅ Event listeners configurados com sucesso!');
 }
+
+    // --- Progress Bar and Volume Events ---
+    if (progressBar) {
+        progressBar.addEventListener('click', (e) => {
+            const rect = progressBar.getBoundingClientRect();
+            const offsetX = e.clientX - rect.left;
+            const totalWidth = rect.width;
+            const clickPercentage = offsetX / totalWidth;
+            
+            const newTime = clickPercentage * player.duration;
+            seekToTime(newTime);
+        });
+        
+        // Adicionado para suporte a toque em dispositivos móveis
+        progressBar.addEventListener('touchend', (e) => {
+            const touch = e.changedTouches[0];
+            const rect = progressBar.getBoundingClientRect();
+            const offsetX = touch.clientX - rect.left;
+            const totalWidth = rect.width;
+            const clickPercentage = offsetX / totalWidth;
+            
+            const newTime = clickPercentage * player.duration;
+            seekToTime(newTime);
+        });
+    }
+
+    if (volumeRange) {
+        volumeRange.addEventListener('input', (e) => {
+            const newVolume = e.target.value;
+            player.volume = newVolume / 100;
+            currentVolume = newVolume;
+            updateVolumeIcon(newVolume);
+            
+            // Enviar nova configuração de volume para o servidor imediatamente
+            if (currentPartyId) {
+                sendMessage('player_action', { 
+                    action: 'set_volume', 
+                    volume: newVolume 
+                });
+            }
+        });
+    }
+
+    // Library Search
+    if (librarySearch) {
+        librarySearch.addEventListener('input', (e) => {
+            filterLibrary(e.target.value);
+        });
+    }
+
+    // Enhanced Party Controls
+    if (createPartyBtn) {
+        createPartyBtn.addEventListener('click', () => {
+            console.log('🎉 Create party button clicked');
+            createParty();
+        });
+    }
+
+    if (leavePartyBtn) {
+        leavePartyBtn.addEventListener('click', () => {
+            console.log('🚪 Leave party button clicked, currentPartyId:', currentPartyId);
+            
+            if (currentPartyId) {
+                if (confirm('Tem certeza que deseja sair da festa?')) {
+                    console.log('🚪 User confirmed leaving party');
+                    
+                    // Send leave message with party ID
+                    sendMessage('leave_party', { party_id: currentPartyId });
+                    showNotification('Saindo da festa...', 'info');
+                    
+                    // Force UI update in case WebSocket response is delayed
+                    setTimeout(() => {
+                        if (currentPartyId) {
+                            console.log('🚪 Forçando saída da festa na UI devido a timeout');
+                            forceLeaveParty();
+                        }
+                    }, 3000); // Reduzido para 3 segundos para resposta mais rápida
+                    
+                    // Disable button temporarily with loading state
+                    leavePartyBtn.disabled = true;
+                    leavePartyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saindo...';
+                    
+                    setTimeout(() => {
+                        if (leavePartyBtn && leavePartyBtn.disabled) {
+                            leavePartyBtn.disabled = false;
+                            leavePartyBtn.innerHTML = '<i class="fas fa-sign-out-alt"></i> Sair';
+                        }
+                    }, 3000);
+                } else {
+                    console.log('🚪 User cancelled leaving party');
+                }
+            } else {
+                console.log('🚪 Not in a party, cannot leave');
+                showNotification('Você não está em uma festa', 'warning');
+            }
+        });
+    }
+
+    if (democraticModeToggle) {
+        democraticModeToggle.addEventListener('change', (e) => {
+            if (isHost) {
+                sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
+                showNotification(
+                    e.target.checked ? 'Modo democrático ativado!' : 'Modo host ativado!', 
+                    'success'
+                );
+            }
+        });
+    }
+
+    // Chat
+    if (sendChatBtn) {
+        sendChatBtn.addEventListener('click', sendChatMessage);
+    }
+
+    if (chatInput) {
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendChatMessage();
+            }
+        });
+    }
+
+    // Upload Form
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (!audioFile.files.length) {
+                showNotification('Selecione um arquivo de áudio', 'warning');
+                return;
+            }
+
+            const file = audioFile.files[0];
+            const maxSize = 50 * 1024 * 1024; // 50MB
+            if (file.size > maxSize) {
+                showNotification('Arquivo muito grande. Máximo: 50MB', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            if (uploadStatus) {
+                uploadStatus.className = 'upload-status';
+                uploadStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fazendo upload...';
+            }
+
+            try {
+                const baseUrl = getBaseURL();
+                const res = await fetch(`${baseUrl}/upload`, { 
+                    method: 'POST', 
+                    body: formData 
+                });
+                
+                if (res.ok) {
+                    const result = await res.json();
+                    if (uploadStatus) {
+                        uploadStatus.innerHTML = `<i class="fas fa-check"></i> Upload realizado com sucesso! <strong>${result.title}</strong>`;
+                    }
+                    audioFile.value = '';
+                    fetchLibrary();
+                    showNotification('Música adicionada à biblioteca!', 'success');
+                    
+                    setTimeout(() => {
+                        if (uploadStatus) uploadStatus.innerHTML = '';
+                    }, 5000);
+                } else {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Erro no upload');
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                if (uploadStatus) {
+                    uploadStatus.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Erro: ${error.message}`;
+                }
+                showNotification('Erro no upload', 'error');
+            }
+        });
+    }
+
+    // Queue Controls
+    const clearQueueBtn = document.querySelector('.clear-queue-btn');
+    if (clearQueueBtn) {
+        clearQueueBtn.addEventListener('click', clearQueue);
+    }
+    
+    // YouTube Import Controls
+    const importUrlBtn = document.getElementById('importUrlBtn');
+    const youtubeUrlInput = document.getElementById('youtubeUrlInput');
+    const importUrlStatus = document.getElementById('importUrlStatus');
+
+    if (importUrlBtn) {
+        importUrlBtn.addEventListener('click', async () => {
+            const url = youtubeUrlInput.value.trim();
+            if (!url) {
+                showNotification('Por favor, cole uma URL do YouTube.', 'warning');
+                return;
+            }
+
+            // UI Feedback
+            importUrlBtn.disabled = true;
+            importUrlBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Importando...';
+            importUrlStatus.textContent = `Importando track do YouTube...`;
+
+            try {
+                const response = await fetch(`${getBaseURL()}/import_from_url`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Falha na importação da track.');
+                }
+
+                const newTrack = await response.json();
+                showNotification(`Importada com sucesso: ${newTrack.title}`, 'success');
+                youtubeUrlInput.value = ''; // Clear input
+                fetchLibrary(); // Refresh library list
+
+            } catch (error) {
+                showNotification(error.message, 'error');
+            } finally {
+                // Reset UI
+                importUrlBtn.disabled = false;
+                importUrlBtn.innerHTML = '<i class="fas fa-download"></i> Importar';
+                importUrlStatus.textContent = '';
+            }
+        });
+    }
 
 function updateVolumeIcon(volume) {
     if (!volumeIcon) return;
