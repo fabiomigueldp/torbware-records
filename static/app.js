@@ -111,20 +111,20 @@ const debugInfo = document.getElementById('debugInfo');
 const debugUserAgent = document.getElementById('debugUserAgent');
 const debugTimestamp = document.getElementById('debugTimestamp');
 
-// Account Management Elements
-const userDropdown = document.getElementById('userDropdown');
-const userNicknameDisplay = document.getElementById('userNicknameDisplay');
-const manageAccountBtn = document.getElementById('manageAccountBtn');
-const logoutBtn = document.getElementById('logoutBtn');
-let manageAccountModal; // Will be initialized later
-const nicknameUpdateInput = document.getElementById('nicknameUpdateInput');
-const nicknameUpdateError = document.getElementById('nicknameUpdateError');
-const updateNicknameBtn = document.getElementById('updateNicknameBtn');
-const initiateDeleteBtn = document.getElementById('initiateDeleteBtn');
-let deleteConfirmModal; // Will be initialized later
-const nicknameConfirmText = document.getElementById('nicknameConfirmText');
-const deleteNicknameConfirmInput = document.getElementById('deleteNicknameConfirmInput');
-const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+// Account Management Elements - will be initialized in initializeApp()
+let userDropdown;
+let userNicknameDisplay;
+let manageAccountBtn;
+let logoutBtn;
+let manageAccountModal;
+let nicknameUpdateInput;
+let nicknameUpdateError;
+let updateNicknameBtn;
+let initiateDeleteBtn;
+let deleteConfirmModal;
+let nicknameConfirmText;
+let deleteNicknameConfirmInput;
+let confirmDeleteBtn;
 
 // --- WebSocket Communication ---
 
@@ -276,8 +276,25 @@ function sendMessage(type, payload) {
 // --- Account Management Functions ---
 
 function openAccountModal() {
+    console.log('🔧 openAccountModal chamado');
+    
+    if (!manageAccountModal) {
+        console.error('❌ manageAccountModal não está inicializado!');
+        return;
+    }
+    
+    if (!nicknameUpdateInput) {
+        console.error('❌ nicknameUpdateInput não encontrado!');
+        return;
+    }
+    
     nicknameUpdateInput.value = userName;
-    nicknameUpdateError.style.display = 'none';
+    
+    if (nicknameUpdateError) {
+        nicknameUpdateError.style.display = 'none';
+    }
+    
+    console.log('✅ Abrindo modal de gerenciar conta');
     manageAccountModal.show();
 }
 
@@ -353,13 +370,21 @@ async function confirmDeleteAccount() {
 }
 
 function logout() {
+    console.log('🚪 Logout iniciado');
+    
     if (ws) {
+        console.log('🔌 Fechando WebSocket');
         ws.close();
     }
+    
     authenticatedUser = null;
     userId = null;
     userName = null;
+    
+    console.log('🧹 Limpando localStorage');
     localStorage.clear();
+    
+    console.log('🔄 Recarregando página');
     document.location.reload();
 }
 
@@ -1797,20 +1822,45 @@ function handlePrevTrack() {
 
 function setupEventListeners() {
     // Account Management
-    manageAccountBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        openAccountModal();
-    });
-    logoutBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        logout();
-    });
-    updateNicknameBtn.addEventListener('click', updateNickname);
-    initiateDeleteBtn.addEventListener('click', initiateDeleteAccount);
-    deleteNicknameConfirmInput.addEventListener('input', () => {
-        confirmDeleteBtn.disabled = deleteNicknameConfirmInput.value !== userName;
-    });
-    confirmDeleteBtn.addEventListener('click', confirmDeleteAccount);
+    if (manageAccountBtn) {
+        manageAccountBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            console.log('🔧 Gerenciar Conta clicado');
+            openAccountModal();
+        });
+    } else {
+        console.error('❌ manageAccountBtn não encontrado!');
+    }
+    
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            console.log('🚪 Logout clicado');
+            logout();
+        });
+    } else {
+        console.error('❌ logoutBtn não encontrado!');
+    }
+    
+    if (updateNicknameBtn) {
+        updateNicknameBtn.addEventListener('click', updateNickname);
+    }
+    
+    if (initiateDeleteBtn) {
+        initiateDeleteBtn.addEventListener('click', initiateDeleteAccount);
+    }
+    
+    if (deleteNicknameConfirmInput) {
+        deleteNicknameConfirmInput.addEventListener('input', () => {
+            if (confirmDeleteBtn) {
+                confirmDeleteBtn.disabled = deleteNicknameConfirmInput.value !== userName;
+            }
+        });
+    }
+    
+    if (confirmDeleteBtn) {
+        confirmDeleteBtn.addEventListener('click', confirmDeleteAccount);
+    }
 
     // Player
     playPauseBtn.addEventListener('click', () => {
@@ -2105,12 +2155,27 @@ document.addEventListener('DOMContentLoaded', () => {
     function initializeApp() {
         console.log('🚀 Inicializando aplicação para usuário:', authenticatedUser);
         
+        // Initialize DOM elements now that DOM is ready
+        userDropdown = document.getElementById('userDropdown');
+        userNicknameDisplay = document.getElementById('userNicknameDisplay');
+        manageAccountBtn = document.getElementById('manageAccountBtn');
+        logoutBtn = document.getElementById('logoutBtn');
+        nicknameUpdateInput = document.getElementById('nicknameUpdateInput');
+        nicknameUpdateError = document.getElementById('nicknameUpdateError');
+        updateNicknameBtn = document.getElementById('updateNicknameBtn');
+        initiateDeleteBtn = document.getElementById('initiateDeleteBtn');
+        nicknameConfirmText = document.getElementById('nicknameConfirmText');
+        deleteNicknameConfirmInput = document.getElementById('deleteNicknameConfirmInput');
+        confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+        
         // Initialize Modals now that the DOM is ready
         manageAccountModal = new bootstrap.Modal(document.getElementById('manageAccountModal'));
         deleteConfirmModal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
 
         // Update UI with user info
-        userNicknameDisplay.textContent = userName;
+        if (userNicknameDisplay) {
+            userNicknameDisplay.textContent = userName;
+        }
 
         // Conectar WebSocket
         connectWebSocket();
