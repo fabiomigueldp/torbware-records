@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug Info</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ccc; }
+        .test-button { padding: 10px 20px; margin: 10px; background: #007bff; color: white; border: none; cursor: pointer; }
+        .result { margin: 10px 0; padding: 10px; background: #f8f9fa; border-left: 4px solid #007bff; }
+        .error { border-left-color: #dc3545; background: #f8d7da; }
+        .success { border-left-color: #28a745; background: #d4edda; }
+    </style>
+</head>
+<body>
+    <h1>Debug Information</h1>
+    
+    <div class="section">
+        <h2>Device Information</h2>
+        <div id="deviceInfo"></div>
+    </div>
+    
+    <div class="section">
+        <h2>Connection Tests</h2>
+        <button class="test-button" onclick="testConnection()">Test Server Connection</button>
+        <button class="test-button" onclick="testLibrary()">Test Library Endpoint</button>
+        <button class="test-button" onclick="testStream()">Test Stream Endpoint</button>
+        <div id="testResults"></div>
+    </div>
+    
+    <div class="section">
+        <h2>Audio Support</h2>
+        <div id="audioSupport"></div>
+    </div>
+
+    <script>
+        // Display device information
+        function displayDeviceInfo() {
+            const info = {
+                'User Agent': navigator.userAgent,
+                'Platform': navigator.platform,
+                'Language': navigator.language,
+                'Online': navigator.onLine,
+                'Screen': `${screen.width}x${screen.height}`,
+                'Viewport': `${window.innerWidth}x${window.innerHeight}`,
+                'Location': window.location.href,
+                'Protocol': window.location.protocol
+            };
+            
+            const container = document.getElementById('deviceInfo');
+            container.innerHTML = Object.entries(info)
+                .map(([key, value]) => `<strong>${key}:</strong> ${value}<br>`)
+                .join('');
+        }
+
+        // Test audio format support
+        function testAudioSupport() {
+            const audio = document.createElement('audio');
+            const formats = {
+                'OGG Vorbis': 'audio/ogg; codecs="vorbis"',
+                'MP3': 'audio/mpeg',
+                'WAV': 'audio/wav',
+                'AAC': 'audio/aac',
+                'WebM': 'audio/webm'
+            };
+            
+            const container = document.getElementById('audioSupport');
+            container.innerHTML = Object.entries(formats)
+                .map(([name, type]) => {
+                    const support = audio.canPlayType(type);
+                    const status = support === 'probably' ? '✅ Full Support' : 
+                                  support === 'maybe' ? '⚠️ Partial Support' : 
+                                  '❌ Not Supported';
+                    return `<strong>${name}:</strong> ${status} (${support || 'empty'})<br>`;
+                })
+                .join('');
+        }
+
+        // Test functions
+        async function testConnection() {
+            addResult('Testing server connection...', 'info');
+            try {
+                const response = await fetch('/test');
+                const data = await response.json();
+                addResult(`✅ Server connection successful: ${JSON.stringify(data)}`, 'success');
+            } catch (error) {
+                addResult(`❌ Server connection failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testLibrary() {
+            addResult('Testing library endpoint...', 'info');
+            try {
+                const response = await fetch('/library');
+                const data = await response.json();
+                addResult(`✅ Library loaded: ${data.length} tracks found`, 'success');
+                console.log('Library data:', data);
+            } catch (error) {
+                addResult(`❌ Library test failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testStream() {
+            addResult('Testing stream endpoint...', 'info');
+            try {
+                const libraryResponse = await fetch('/library');
+                const tracks = await libraryResponse.json();
+                
+                if (tracks.length === 0) {
+                    addResult('⚠️ No tracks available to test', 'info');
+                    return;
+                }
+                
+                const trackId = tracks[0].id;
+                const streamUrl = `/stream/${trackId}`;
+                
+                // Test HEAD request
+                const headResponse = await fetch(streamUrl, { method: 'HEAD' });
+                addResult(`HEAD request: ${headResponse.status} ${headResponse.statusText}`, 
+                         headResponse.ok ? 'success' : 'error');
+                
+                // Test partial GET request
+                const rangeResponse = await fetch(streamUrl, {
+                    headers: { 'Range': 'bytes=0-1023' }
+                });
+                addResult(`Range request: ${rangeResponse.status} ${rangeResponse.statusText}`, 
+                         rangeResponse.status === 206 ? 'success' : 'error');
+                
+                // Test audio element
+                const audio = new Audio(streamUrl);
+                audio.addEventListener('loadstart', () => addResult('✅ Audio load started', 'success'));
+                audio.addEventListener('canplay', () => addResult('✅ Audio can play', 'success'));
+                audio.addEventListener('error', (e) => addResult(`❌ Audio error: ${e.message}`, 'error'));
+                
+                audio.load();
+                
+            } catch (error) {
+                addResult(`❌ Stream test failed: ${error.message}`, 'error');
+            }
+        }
+
+        function addResult(message, type = 'info') {
+            const container = document.getElementById('testResults');
+            const div = document.createElement('div');
+            div.className = `result ${type}`;
+            div.innerHTML = `<small>${new Date().toLocaleTimeString()}</small><br>${message}`;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Initialize
+        window.onload = function() {
+            displayDeviceInfo();
+            testAudioSupport();
+        };
+    </script>
+</body>
+</html>
