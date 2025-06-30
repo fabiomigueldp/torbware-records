@@ -1037,28 +1037,58 @@ window.addEventListener('load', () => {
     console.log('🌐 Window loaded');
     console.log('📱 User Agent:', navigator.userAgent);
     console.log('🌍 Base URL:', getBaseURL());
+    console.log('🌐 Current Location:', window.location.href);
     
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     console.log('📱 Is Mobile:', isMobile);
     
+    // Adicionar classe para dispositivos móveis
     if (isMobile) {
         document.body.classList.add('mobile-device');
+        console.log('📱 Classe mobile-device adicionada');
     }
     
+    // Mostrar informações de debug em mobile
     if (isMobile && debugInfo) {
         debugInfo.style.display = 'block';
         if (debugUserAgent) debugUserAgent.textContent = navigator.userAgent.substring(0, 50) + '...';
         if (debugTimestamp) debugTimestamp.textContent = new Date().toISOString();
+        console.log('📱 Debug info exibido');
     }
     
-    // Inicializar Bootstrap modal com verificação de erro
-    initializeModal(isMobile);
-    
-    // Configurar event listeners após um pequeno delay
-    setTimeout(() => {
-        setupEventListeners();
-    }, 300);
+    // Verificar conectividade básica
+    testConnectivity().then(isConnected => {
+        console.log('🌐 Conectividade:', isConnected ? 'OK' : 'Problemas detectados');
+        
+        // Inicializar modal com verificação de erro
+        setTimeout(() => {
+            initializeModal(isMobile);
+        }, 300);
+        
+        // Configurar event listeners após um pequeno delay
+        setTimeout(() => {
+            setupEventListeners();
+        }, 600);
+    });
 });
+
+async function testConnectivity() {
+    try {
+        const baseUrl = getBaseURL();
+        console.log('🌐 Testando conectividade com:', baseUrl);
+        
+        const response = await fetch(`${baseUrl}/library`, {
+            method: 'HEAD',
+            timeout: 5000
+        });
+        
+        console.log('🌐 Resposta do servidor:', response.status);
+        return response.ok;
+    } catch (error) {
+        console.warn('⚠️ Erro na conectividade:', error);
+        return false;
+    }
+}
 
 function initializeModal(isMobile) {
     console.log('🚪 Inicializando modal...');
