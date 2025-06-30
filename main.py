@@ -337,4 +337,18 @@ def stream_track(track_id: int):
     if not track: raise HTTPException(status_code=404, detail="Track not found")
     file_path = os.path.join(MEDIA_DIR, track.filename)
     if not os.path.exists(file_path): raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, media_type="audio/ogg", filename=track.filename)
+    
+    # Determine correct MIME type based on file extension
+    file_ext = os.path.splitext(track.filename)[1].lower()
+    mime_type_map = {
+        '.mp3': 'audio/mpeg',
+        '.mp4': 'audio/mp4',
+        '.m4a': 'audio/mp4',
+        '.wav': 'audio/wav',
+        '.flac': 'audio/flac',
+        '.ogg': 'audio/ogg',
+        '.webm': 'audio/webm'
+    }
+    media_type = mime_type_map.get(file_ext, 'audio/mpeg')  # Default to mp3
+    
+    return FileResponse(file_path, media_type=media_type, filename=track.filename)

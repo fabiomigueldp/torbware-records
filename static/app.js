@@ -1,3 +1,5 @@
+// --- Torbware Records - Modern UI JavaScript ---
+
 // --- Global State ---
 let ws;
 let userId = null;
@@ -5,15 +7,20 @@ let userName = null;
 let currentPartyId = null;
 let currentPartyMode = 'host';
 let isHost = false;
-let isSyncing = false; // Prevents feedback loops from player events
+let isSyncing = false;
 let hostSyncInterval = null;
 let reconnectAttempts = 0;
 let maxReconnectAttempts = 5;
-let lastPlayerAction = 0; // Timestamp of last player action sent
-let actionDebounceTime = 300; // ms to debounce player actions (host mode)
-let democraticDebounceTime = 500; // ms to debounce player actions (democratic mode)
-let lastSyncReceived = 0; // Timestamp of last sync received
-let pendingSeek = null; // Debounced seek action
+let lastPlayerAction = 0;
+let actionDebounceTime = 300;
+let democraticDebounceTime = 500;
+let lastSyncReceived = 0;
+let pendingSeek = null;
+let currentVolume = 100;
+let isMuted = false;
+let currentQueue = [];
+let libraryData = [];
+let filteredLibrary = [];
 
 // --- DOM Elements ---
 const nameModal = new bootstrap.Modal(document.getElementById('nameModal'));
@@ -23,22 +30,60 @@ const alternativeJoinButton = document.getElementById('alternativeJoinButton');
 const alternativeEntry = document.getElementById('alternativeEntry');
 const alternativeNameInput = document.getElementById('alternativeNameInput');
 const alternativeSubmitButton = document.getElementById('alternativeSubmitButton');
+
+// Player Elements
 const player = document.getElementById('player');
-const playerControls = document.getElementById('player-controls');
+const playerControls = document.getElementById('playerControls');
+const playPauseBtn = document.getElementById('playPauseBtn');
+const playPauseIcon = document.getElementById('playPauseIcon');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const currentTimeDisplay = document.getElementById('currentTime');
+const totalTimeDisplay = document.getElementById('totalTime');
+const progressBar = document.getElementById('progressBar');
+const progressFill = document.getElementById('progressFill');
+const progressHandle = document.getElementById('progressHandle');
+const playerTrackTitle = document.getElementById('playerTrackTitle');
 const playerStatus = document.getElementById('playerStatus');
+const volumeBtn = document.getElementById('volumeBtn');
+const volumeIcon = document.getElementById('volumeIcon');
+const volumeRange = document.getElementById('volumeRange');
+
+// UI Elements
+const connectionStatus = document.getElementById('connectionStatus');
 const libraryList = document.getElementById('libraryList');
+const librarySearch = document.getElementById('librarySearch');
 const userList = document.getElementById('userList');
+const userCount = document.getElementById('userCount');
 const partyList = document.getElementById('partyList');
 const createPartyBtn = document.getElementById('createPartyBtn');
 const leavePartyBtn = document.getElementById('leavePartyBtn');
-const currentPartyPanel = document.getElementById('currentPartyPanel');
-const welcomeCard = document.getElementById('welcomeCard');
-const partyInfo = document.getElementById('partyInfo');
+
+// Views
+const partiesView = document.getElementById('partiesView');
+const partyView = document.getElementById('partyView');
+
+// Party Elements
+const partyHostName = document.getElementById('partyHostName');
+const partyModeStatus = document.getElementById('partyModeStatus');
+const partyMemberCount = document.getElementById('partyMemberCount');
+const currentTrackTitle = document.getElementById('currentTrackTitle');
+const currentTrackArtist = document.getElementById('currentTrackArtist');
 const partyMemberList = document.getElementById('partyMemberList');
-const hostControls = document.getElementById('hostControls');
-const memberControls = document.getElementById('memberControls');
+const queueList = document.getElementById('queueList');
+const chatMessages = document.getElementById('chatMessages');
+const chatInput = document.getElementById('chatInput');
+const sendChatBtn = document.getElementById('sendChatBtn');
 const democraticModeToggle = document.getElementById('democraticModeToggle');
-const connectionStatus = document.getElementById('connectionStatus');
+const partyIdDisplay = document.getElementById('partyIdDisplay');
+const partyCreatedTime = document.getElementById('partyCreatedTime');
+
+// Upload Elements
+const uploadForm = document.getElementById('uploadForm');
+const audioFile = document.getElementById('audioFile');
+const uploadStatus = document.getElementById('uploadStatus');
+
+// Debug Elements
 const debugInfo = document.getElementById('debugInfo');
 const debugUserAgent = document.getElementById('debugUserAgent');
 const debugTimestamp = document.getElementById('debugTimestamp');
@@ -50,7 +95,7 @@ function connectWebSocket() {
     ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${userId}`);
 
     ws.onopen = () => {
-        console.log('WebSocket connected.');
+        console.log('🔌 WebSocket connected');
         reconnectAttempts = 0;
         updateConnectionStatus(true);
         sendMessage('user_join', { name: userName });
@@ -58,25 +103,11 @@ function connectWebSocket() {
 
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        switch (message.type) {
-            case 'state_update':
-                handleStateUpdate(message.payload);
-                break;
-            case 'party_sync':
-                handlePartySync(message.payload);
-                break;
-            case 'action_rejected':
-                console.log('🚫 Ação rejeitada pelo servidor:', message.payload);
-                showNotification('Ação muito rápida, aguarde um momento', 'warning');
-                break;
-            case 'error':
-                showNotification(`Erro: ${message.payload.message}`, 'error');
-                break;
-        }
+        handleWebSocketMessage(message);
     };
 
     ws.onclose = () => {
-        console.log('WebSocket disconnected.');
+        console.log('🔌 WebSocket disconnected');
         updateConnectionStatus(false);
         
         if (reconnectAttempts < maxReconnectAttempts) {
@@ -89,18 +120,52 @@ function connectWebSocket() {
     };
 
     ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        console.error('🔌 WebSocket error:', error);
         updateConnectionStatus(false);
     };
 }
 
-function updateConnectionStatus(connected) {
-    if (connected) {
-        connectionStatus.textContent = '🟢 Conectado';
-        connectionStatus.className = 'connection-status connected';
-    } else {
-        connectionStatus.textContent = '🔴 Desconectado';
-        connectionStatus.className = 'connection-status disconnected';
+function handleWebSocketMessage(message) {
+    console.log('📨 WebSocket message:', message.type, message.payload);
+    
+    switch (message.type) {
+        case 'state_update':
+            handleStateUpdate(message.payload);
+            break;
+        case 'party_sync':
+            handlePartySync(message.payload);
+            break;
+        case 'party_left':
+            console.log('🚪 Party left confirmation');
+            forceLeaveParty();
+            showNotification('Você saiu da festa com sucesso', 'success');
+            break;
+        case 'party_joined':
+            console.log('🎉 Party joined confirmation');
+            showNotification('Você entrou na festa!', 'success');
+            break;
+        case 'party_created':
+            console.log('🎊 Party created confirmation');
+            showNotification('Festa criada com sucesso!', 'success');
+            break;
+        case 'chat_message':
+            handleChatMessage(message.payload);
+            break;
+        case 'action_rejected':
+            console.log('🚫 Ação rejeitada:', message.payload);
+            showNotification('Ação muito rápida, aguarde um momento', 'warning');
+            break;
+        case 'error':
+            console.error('❌ WebSocket error:', message.payload);
+            showNotification(`Erro: ${message.payload.message || 'Erro desconhecido'}`, 'error');
+            
+            // Handle specific error cases
+            if (message.payload.code === 'PARTY_NOT_FOUND') {
+                forceLeaveParty();
+            }
+            break;
+        default:
+            console.log('❓ Unknown message type:', message.type);
     }
 }
 
@@ -109,268 +174,6 @@ function sendMessage(type, payload) {
         ws.send(JSON.stringify({ type, payload }));
     } else {
         showNotification('Sem conexão. Tentando reconectar...', 'warning');
-    }
-}
-
-// --- UI Helper Functions ---
-
-function showNotification(message, type = 'info') {
-    // Create toast notification
-    const toastContainer = document.getElementById('toastContainer') || createToastContainer();
-    const toast = document.createElement('div');
-    toast.className = `toast align-items-center text-bg-${type === 'error' ? 'danger' : type === 'success' ? 'success' : type === 'warning' ? 'warning' : 'primary'} border-0`;
-    toast.setAttribute('role', 'alert');
-    toast.innerHTML = `
-        <div class="d-flex">
-            <div class="toast-body">${message}</div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-        </div>
-    `;
-    
-    toastContainer.appendChild(toast);
-    const bsToast = new bootstrap.Toast(toast);
-    bsToast.show();
-    
-    toast.addEventListener('hidden.bs.toast', () => {
-        toast.remove();
-    });
-}
-
-function createToastContainer() {
-    const container = document.createElement('div');
-    container.id = 'toastContainer';
-    container.className = 'toast-container position-fixed bottom-0 end-0 p-3';
-    document.body.appendChild(container);
-    return container;
-}
-
-function setLoadingState(element, loading, text = '') {
-    if (loading) {
-        element.classList.add('loading');
-        if (text) {
-            const spinner = element.querySelector('.btn-text');
-            if (spinner) {
-                spinner.textContent = text;
-            } else {
-                element.textContent = text;
-            }
-        }
-    } else {
-        element.classList.remove('loading');
-    }
-}
-
-// --- UI Rendering ---
-
-function renderUserList(users) {
-    userList.innerHTML = '';
-    if (users.length === 0) {
-        userList.innerHTML = '<li class="list-group-item text-center text-muted">Nenhum usuário conectado</li>';
-        return;
-    }
-    
-    users.forEach(user => {
-        const li = document.createElement('li');
-        li.className = `list-group-item d-flex align-items-center ${user.id === userId ? 'active' : ''}`;
-        li.innerHTML = `
-            <span class="user-indicator"></span>
-            <strong>${user.name}</strong>
-            ${user.id === userId ? '<small class="ms-auto">Você</small>' : ''}
-        `;
-        userList.appendChild(li);
-    });
-}
-
-function renderPartyList(parties) {
-    partyList.innerHTML = '';
-    if (parties.length === 0) {
-        partyList.innerHTML = `
-            <li class="list-group-item text-center">
-                <div class="text-muted">
-                    <h6>🎉 Nenhuma festa ativa</h6>
-                    <small>Seja o primeiro a criar uma festa!</small>
-                </div>
-            </li>
-        `;
-        return;
-    }
-    
-    parties.forEach(party => {
-        const li = document.createElement('li');
-        li.className = 'list-group-item';
-        li.innerHTML = `
-            <div class="d-flex justify-content-between align-items-start">
-                <div class="flex-grow-1">
-                    <div class="d-flex align-items-center gap-2 mb-1">
-                        <strong>🎊 ${party.host_name}</strong>
-                        <span class="party-status ${party.mode === 'democratic' ? 'democratic-mode' : 'host-mode'}">
-                            ${party.mode === 'democratic' ? '🗳️ Democrático' : '👑 Host'}
-                        </span>
-                    </div>
-                    <small class="text-muted d-block">
-                        👥 ${party.member_count} membro(s) | 🎵 ${party.current_track_title}
-                    </small>
-                </div>
-                <button class="btn btn-primary btn-sm" onclick="joinParty('${party.party_id}')" ${currentPartyId ? 'disabled' : ''}>
-                    ${currentPartyId === party.party_id ? '✓ Na festa' : 'Entrar'}
-                </button>
-            </div>
-        `;
-        partyList.appendChild(li);
-    });
-}
-
-function renderCurrentParty(party) {
-    if (!party || !party.party_id) {
-        currentPartyPanel.style.display = 'none';
-        welcomeCard.style.display = 'block';
-        currentPartyId = null;
-        currentPartyMode = 'host';
-        isHost = false;
-        updatePlayerControls(true); // Enable controls when returning to solo mode
-        updatePlayerStatus('solo');
-        if (hostSyncInterval) {
-            clearInterval(hostSyncInterval);
-            hostSyncInterval = null;
-        }
-        return;
-    }
-
-    currentPartyId = party.party_id;
-    currentPartyMode = party.mode;
-    isHost = party.host_id === userId;
-    currentPartyPanel.style.display = 'block';
-    welcomeCard.style.display = 'none';
-
-    const hostMember = party.members.find(m => m.id === party.host_id);
-    partyInfo.innerHTML = `
-        <div class="d-flex justify-content-between align-items-center mb-2">
-            <div>
-                <h6 class="mb-1">👑 Anfitrião: <strong>${hostMember?.name || 'Desconhecido'}</strong></h6>
-                <span class="party-status ${party.mode === 'democratic' ? 'democratic-mode' : 'host-mode'}">
-                    ${party.mode === 'democratic' ? '🗳️ Modo Democrático' : '👑 Modo Host'}
-                </span>
-            </div>
-            <div class="text-muted small">
-                ID: ${party.party_id.substr(0, 8)}...
-            </div>
-        </div>
-    `;
-
-    // Render party members
-    partyMemberList.innerHTML = '';
-    party.members.forEach(member => {
-        const li = document.createElement('li');
-        li.className = `list-group-item d-flex align-items-center ${member.id === userId ? 'active' : ''}`;
-        li.innerHTML = `
-            <span class="user-indicator"></span>
-            <span class="flex-grow-1">
-                <strong>${member.name}</strong>
-                ${member.id === party.host_id ? ' <small class="text-warning">👑 Host</small>' : ''}
-                ${member.id === userId ? ' <small class="text-primary">(Você)</small>' : ''}
-            </span>
-        `;
-        partyMemberList.appendChild(li);
-    });
-
-    // Update controls visibility
-    hostControls.style.display = isHost ? 'block' : 'none';
-    memberControls.style.display = (!isHost && party.mode === 'democratic') ? 'block' : 'none';
-    
-    if (isHost) {
-        democraticModeToggle.checked = party.mode === 'democratic';
-    }
-
-    const canControl = isHost || party.mode === 'democratic';
-    
-    console.log('🎯 Determinando controle do player:', {
-        isHost,
-        partyMode: party.mode,
-        canControl,
-        userId,
-        hostId: party.host_id,
-        isUserTheHost: party.host_id === userId
-    });
-    
-    updatePlayerControls(canControl);
-    updatePlayerStatus(isHost ? 'host' : (party.mode === 'democratic' ? 'democratic' : 'member'));
-}
-
-function updatePlayerControls(enabled) {
-    const canControl = enabled || !currentPartyId; // Always allow control when not in party
-    
-    console.log('🎮 Atualizando controles do player:', {
-        enabled,
-        currentPartyId,
-        canControl,
-        isHost,
-        currentPartyMode,
-        playerControlsDisabled: playerControls.classList.contains('disabled'),
-        playerPointerEvents: player.style.pointerEvents
-    });
-    
-    if (canControl) {
-        playerControls.classList.remove('disabled');
-        // Ensure all player controls are actually enabled
-        player.controls = true;
-        player.style.pointerEvents = 'auto';
-        player.style.opacity = '1';
-        player.style.filter = 'none';
-        
-        // Force enable the HTML5 audio element controls
-        player.removeAttribute('disabled');
-        
-        // Ensure the player element itself is interactive
-        player.style.setProperty('pointer-events', 'auto', 'important');
-        
-        console.log('✅ Controles do player habilitados - Estado final:', {
-            controls: player.controls,
-            pointerEvents: player.style.pointerEvents,
-            disabled: player.disabled,
-            classDisabled: playerControls.classList.contains('disabled')
-        });
-    } else {
-        playerControls.classList.add('disabled');
-        // Keep native controls but disable interaction
-        player.controls = true;
-        player.style.pointerEvents = 'none';
-        
-        console.log('🚫 Controles do player desabilitados - Estado final:', {
-            controls: player.controls,
-            pointerEvents: player.style.pointerEvents,
-            classDisabled: playerControls.classList.contains('disabled')
-        });
-    }
-}
-
-function updatePlayerStatus(mode) {
-    playerStatus.style.display = 'block';
-    switch(mode) {
-        case 'solo':
-            playerStatus.textContent = '🎧 Modo Solo';
-            playerStatus.className = 'party-status host-mode';
-            break;
-        case 'host':
-            playerStatus.textContent = '👑 Você controla';
-            playerStatus.className = 'party-status host-mode';
-            break;
-        case 'democratic':
-            playerStatus.textContent = '🗳️ Controle compartilhado';
-            playerStatus.className = 'party-status democratic-mode';
-            
-            // Adiciona indicador de debounce se necessário
-            const timeSinceAction = Date.now() - lastPlayerAction;
-            if (timeSinceAction < actionDebounceTime * 2) {
-                playerStatus.textContent += ' ⏳';
-                playerStatus.title = 'Aguardando sincronização...';
-            } else {
-                playerStatus.title = 'Você pode controlar o player';
-            }
-            break;
-        case 'member':
-            playerStatus.textContent = '🎵 Ouvindo festa';
-            playerStatus.className = 'party-status democratic-mode';
-            break;
     }
 }
 
@@ -384,31 +187,19 @@ function handleStateUpdate(payload) {
 function handlePartySync(party) {
     console.log('🔄 Party sync recebido:', party);
     
-    const syncTimestamp = Date.now();
-    lastSyncReceived = syncTimestamp;
-    
-    // Atualiza estado da interface
+    lastSyncReceived = Date.now();
     renderCurrentParty(party);
 
-    // NOVA LÓGICA DE SINCRONIZAÇÃO INTELIGENTE:
-    
     if (party.mode === 'host') {
-        // MODO HOST: Apenas o host controla, membros sincronizam
         if (party.host_id === userId) {
-            console.log('👑 HOST MODE: Você é o host - mantendo controle total');
+            console.log('👑 HOST MODE: Você é o host');
             
-            // Host apenas atualiza música se necessário
             if (party.track_id && party.track_id !== getCurrentTrackId()) {
-                console.log('🎵 Host: Mudando para nova música:', party.track_id);
-                const newTrackSrc = new URL(`/stream/${party.track_id}`, window.API_BASE_URL).href;
-                player.src = newTrackSrc;
-                player.load();
+                console.log('🎵 Host: Mudando música:', party.track_id);
+                loadTrack(party.track_id);
             }
             
-            // HOST NÃO DEVE SER FORÇADO A SINCRONIZAR - ele controla tudo
-            // Apenas inicia/mantém intervalo de sincronização para enviar seu estado
             if (!hostSyncInterval) {
-                console.log('⏰ Iniciando intervalo de sincronização do host');
                 hostSyncInterval = setInterval(() => {
                     if (ws && ws.readyState === WebSocket.OPEN && !isSyncing) {
                         sendMessage('sync_update', {
@@ -419,41 +210,30 @@ function handlePartySync(party) {
                 }, 1000);
             }
         } else {
-            console.log('� HOST MODE: Você é membro - sincronizando com host');
-            // Membros sempre sincronizam no modo host
+            console.log('👥 HOST MODE: Você é membro');
             applySyncUpdate(party, false);
             
-            // Limpa intervalo do host se existir
             if (hostSyncInterval) {
                 clearInterval(hostSyncInterval);
                 hostSyncInterval = null;
             }
         }
-        
     } else if (party.mode === 'democratic') {
-        // MODO DEMOCRÁTICO: Todos podem controlar
-        
-        // Verifica se houve ação recente do próprio usuário com debounce específico do modo
-        const currentDebounce = currentPartyMode === 'democratic' ? democraticDebounceTime : actionDebounceTime;
-        const hasRecentAction = (syncTimestamp - lastPlayerAction) < currentDebounce * 3;
+        const currentDebounce = democraticDebounceTime;
+        const hasRecentAction = (Date.now() - lastPlayerAction) < currentDebounce * 3;
         
         if (hasRecentAction) {
-            console.log('🗳️ DEMOCRATIC MODE: Ignorando sync - você acabou de fazer uma ação (debounce ativo)');
+            console.log('🗳️ DEMOCRATIC MODE: Ignorando sync - debounce ativo');
             
-            // Apenas atualiza música se for diferente
             if (party.track_id && party.track_id !== getCurrentTrackId()) {
                 console.log('🎵 Democrático: Mudando música');
-                const newTrackSrc = new URL(`/stream/${party.track_id}`, window.API_BASE_URL).href;
-                player.src = newTrackSrc;
-                player.load();
+                loadTrack(party.track_id);
             }
         } else {
-            console.log('🗳️ DEMOCRATIC MODE: Aplicando sincronização de outro membro');
-            // Aplica sincronização gentle (mais tolerante)
+            console.log('🗳️ DEMOCRATIC MODE: Aplicando sincronização');
             applySyncUpdate(party, true);
         }
         
-        // No modo democrático, não há host sync interval
         if (hostSyncInterval) {
             clearInterval(hostSyncInterval);
             hostSyncInterval = null;
@@ -461,41 +241,28 @@ function handlePartySync(party) {
     }
 }
 
-// Função auxiliar para aplicar sincronização
 function applySyncUpdate(party, gentle = false) {
     isSyncing = true;
     
-    console.log(`🔄 Aplicando sincronização ${gentle ? '(gentle)' : '(forceful)'}:`, {
+    console.log(`🔄 Aplicando sync ${gentle ? '(gentle)' : '(forceful)'}:`, {
         track_id: party.track_id,
         currentTime: party.currentTime,
-        is_playing: party.is_playing,
-        player_currentTime: player.currentTime,
-        player_paused: player.paused
+        is_playing: party.is_playing
     });
 
     try {
-        // Sync da música
-        if (party.track_id) {
-            const newTrackSrc = new URL(`/stream/${party.track_id}`, window.API_BASE_URL).href;
-            if (player.src !== newTrackSrc) {
-                console.log(`🎵 Mudando música: ${getCurrentTrackId()} -> ${party.track_id}`);
-                player.src = newTrackSrc;
-                player.load();
-            }
+        if (party.track_id && party.track_id !== getCurrentTrackId()) {
+            loadTrack(party.track_id);
         }
 
-        // Sync do tempo com tolerância diferente baseada no modo
-        const timeTolerance = gentle ? 4.0 : 1.5; // Mais tolerante no modo democrático (aumentado de 3.0 para 4.0)
+        const timeTolerance = gentle ? 4.0 : 1.5;
         const timeDifference = Math.abs(player.currentTime - party.currentTime);
         
         if (party.track_id && timeDifference > timeTolerance) {
-            console.log(`⏰ Ajustando tempo: ${player.currentTime.toFixed(2)}s -> ${party.currentTime.toFixed(2)}s (diff: ${timeDifference.toFixed(2)}s, tolerance: ${timeTolerance}s)`);
+            console.log(`⏰ Ajustando tempo: ${timeDifference.toFixed(2)}s`);
             player.currentTime = party.currentTime;
-        } else if (party.track_id && timeDifference > 0.5) {
-            console.log(`⏰ Diferença de tempo pequena: ${timeDifference.toFixed(2)}s (dentro da tolerância: ${timeTolerance}s)`);
         }
 
-        // Sync do estado play/pause
         if (party.is_playing && player.paused) {
             console.log('▶️ Iniciando reprodução (sync)');
             player.play().catch(e => {
@@ -517,57 +284,317 @@ function applySyncUpdate(party, gentle = false) {
     }
 }
 
-// Função auxiliar para obter ID da música atual
+function handleChatMessage(message) {
+    const messageElement = document.createElement('div');
+    messageElement.className = 'chat-message';
+    messageElement.innerHTML = `
+        <div class="chat-message-author">${message.author}</div>
+        <div class="chat-message-text">${message.text}</div>
+        <div class="chat-message-time">${new Date(message.timestamp).toLocaleTimeString()}</div>
+    `;
+    
+    chatMessages.appendChild(messageElement);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// --- UI Helper Functions ---
+
+function updateConnectionStatus(connected) {
+    if (connected) {
+        connectionStatus.innerHTML = '<i class="fas fa-circle"></i> Conectado';
+        connectionStatus.className = 'connection-indicator connected';
+    } else {
+        connectionStatus.innerHTML = '<i class="fas fa-circle"></i> Desconectado';
+        connectionStatus.className = 'connection-indicator disconnected';
+    }
+}
+
+function showNotification(message, type = 'info') {
+    const toastContainer = document.getElementById('toastContainer') || createToastContainer();
+    const toast = document.createElement('div');
+    const bgClass = type === 'error' ? 'danger' : type === 'success' ? 'success' : type === 'warning' ? 'warning' : 'primary';
+    
+    toast.className = `toast align-items-center text-bg-${bgClass} border-0`;
+    toast.setAttribute('role', 'alert');
+    toast.innerHTML = `
+        <div class="d-flex">
+            <div class="toast-body">${message}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    `;
+    
+    toastContainer.appendChild(toast);
+    const bsToast = new bootstrap.Toast(toast);
+    bsToast.show();
+    
+    toast.addEventListener('hidden.bs.toast', () => {
+        toast.remove();
+    });
+}
+
+function createToastContainer() {
+    const container = document.createElement('div');
+    container.id = 'toastContainer';
+    container.className = 'toast-container position-fixed bottom-0 end-0 p-3';
+    container.style.zIndex = '9999';
+    document.body.appendChild(container);
+    return container;
+}
+
+// --- Rendering Functions ---
+
+function renderUserList(users) {
+    if (!userList) return;
+    
+    userList.innerHTML = '';
+    
+    if (users.length === 0) {
+        userList.innerHTML = `
+            <div class="loading-state">
+                <i class="fas fa-users"></i>
+                <span>Nenhum usuário conectado</span>
+            </div>
+        `;
+        if (userCount) userCount.textContent = '0';
+        return;
+    }
+    
+    users.forEach(user => {
+        const userItem = document.createElement('div');
+        userItem.className = `user-item ${user.id === userId ? 'current-user' : ''}`;
+        userItem.innerHTML = `
+            <div class="user-avatar">${user.name.charAt(0).toUpperCase()}</div>
+            <div class="user-name">${user.name}</div>
+            <div class="user-status"></div>
+            ${user.id === userId ? '<small class="text-primary">(Você)</small>' : ''}
+        `;
+        userList.appendChild(userItem);
+    });
+    
+    if (userCount) userCount.textContent = users.length.toString();
+}
+
+function renderPartyList(parties) {
+    if (!partyList) return;
+    
+    partyList.innerHTML = '';
+    
+    if (parties.length === 0) {
+        partyList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-party-horn"></i>
+                <p>Nenhuma festa ativa</p>
+                <small>Seja o primeiro a criar uma festa!</small>
+            </div>
+        `;
+        return;
+    }
+    
+    parties.forEach(party => {
+        const partyCard = document.createElement('div');
+        partyCard.className = 'party-card';
+        partyCard.innerHTML = `
+            <div class="party-card-header">
+                <div class="party-host">
+                    <i class="fas fa-crown"></i> ${party.host_name}
+                </div>
+                <span class="party-mode-badge ${party.mode}">
+                    ${party.mode === 'democratic' ? '<i class="fas fa-vote-yea"></i> Democrático' : '<i class="fas fa-crown"></i> Host'}
+                </span>
+            </div>
+            <div class="party-info">
+                <div class="party-stats">
+                    <div class="party-stat">
+                        <i class="fas fa-users"></i>
+                        <span>${party.member_count} membro(s)</span>
+                    </div>
+                    <div class="party-stat">
+                        <i class="fas fa-music"></i>
+                        <span>${party.current_track_title || 'Nenhuma música'}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="party-actions">
+                <button class="btn btn-primary join-party-btn" 
+                        onclick="joinParty('${party.party_id}')" 
+                        ${currentPartyId ? 'disabled' : ''}>
+                    ${currentPartyId === party.party_id ? '<i class="fas fa-check"></i> Na festa' : '<i class="fas fa-sign-in-alt"></i> Entrar'}
+                </button>
+            </div>
+        `;
+        partyList.appendChild(partyCard);
+    });
+}
+
+function renderCurrentParty(party) {
+    if (!party || !party.party_id) {
+        // Not in party
+        if (partiesView) partiesView.style.display = 'block';
+        if (partyView) partyView.style.display = 'none';
+        
+        currentPartyId = null;
+        currentPartyMode = 'host';
+        isHost = false;
+        updatePlayerControls(true);
+        updatePlayerStatus('solo');
+        
+        if (hostSyncInterval) {
+            clearInterval(hostSyncInterval);
+            hostSyncInterval = null;
+        }
+        return;
+    }
+
+    // In party
+    if (partiesView) partiesView.style.display = 'none';
+    if (partyView) partyView.style.display = 'block';
+    
+    currentPartyId = party.party_id;
+    currentPartyMode = party.mode;
+    isHost = party.host_id === userId;
+
+    // Update party header
+    const hostMember = party.members.find(m => m.id === party.host_id);
+    if (partyHostName) partyHostName.textContent = hostMember?.name || 'Desconhecido';
+    if (partyModeStatus) {
+        partyModeStatus.className = `mode-badge ${party.mode}`;
+        partyModeStatus.innerHTML = party.mode === 'democratic' ? 
+            '<i class="fas fa-vote-yea"></i> Democrático' : 
+            '<i class="fas fa-crown"></i> Host';
+    }
+    if (partyMemberCount) partyMemberCount.textContent = `${party.members.length} membros`;
+
+    // Update now playing
+    updateNowPlaying(party);
+
+    // Update members list
+    renderPartyMembers(party.members, party.host_id);
+
+    // Update controls
+    const hostControlsTab = document.getElementById('hostControlsTab');
+    if (hostControlsTab) {
+        hostControlsTab.style.display = isHost ? 'block' : 'none';
+    }
+    
+    if (democraticModeToggle && isHost) {
+        democraticModeToggle.checked = party.mode === 'democratic';
+    }
+
+    // Update party details
+    if (partyIdDisplay) partyIdDisplay.textContent = party.party_id.substr(0, 8) + '...';
+    if (partyCreatedTime) partyCreatedTime.textContent = new Date().toLocaleString();
+
+    const canControl = isHost || party.mode === 'democratic';
+    updatePlayerControls(canControl);
+    updatePlayerStatus(isHost ? 'host' : (party.mode === 'democratic' ? 'democratic' : 'member'));
+}
+
+function updateNowPlaying(party) {
+    const trackTitle = party.current_track_title || 'Nenhuma música tocando';
+    const trackArtist = party.current_track_title ? 'ID: ' + party.track_id : 'Selecione uma música da biblioteca';
+    
+    if (currentTrackTitle) currentTrackTitle.textContent = trackTitle;
+    if (currentTrackArtist) currentTrackArtist.textContent = trackArtist;
+}
+
+function renderPartyMembers(members, hostId) {
+    if (!partyMemberList) return;
+    
+    partyMemberList.innerHTML = '';
+    
+    members.forEach(member => {
+        const memberItem = document.createElement('div');
+        memberItem.className = 'member-item';
+        memberItem.innerHTML = `
+            <div class="member-avatar">${member.name.charAt(0).toUpperCase()}</div>
+            <div class="member-info">
+                <div class="member-name">${member.name}</div>
+                <div class="member-status">
+                    ${member.id === hostId ? '<span class="member-badge host"><i class="fas fa-crown"></i> Host</span>' : ''}
+                    ${member.id === userId ? '<span class="member-badge you"><i class="fas fa-user"></i> Você</span>' : ''}
+                </div>
+            </div>
+        `;
+        partyMemberList.appendChild(memberItem);
+    });
+}
+
+function updatePlayerControls(enabled) {
+    const canControl = enabled || !currentPartyId;
+    
+    console.log('🎮 Atualizando controles:', { enabled, currentPartyId, canControl });
+    
+    if (canControl) {
+        playerControls.classList.remove('disabled');
+        
+        if (playPauseBtn) playPauseBtn.disabled = false;
+        if (prevBtn) prevBtn.disabled = false;
+        if (nextBtn) nextBtn.disabled = false;
+        if (progressBar) progressBar.style.pointerEvents = 'auto';
+        if (volumeRange) volumeRange.disabled = false;
+        
+        console.log('✅ Controles habilitados');
+    } else {
+        playerControls.classList.add('disabled');
+        
+        if (playPauseBtn) playPauseBtn.disabled = true;
+        if (prevBtn) prevBtn.disabled = true;
+        if (nextBtn) nextBtn.disabled = true;
+        if (progressBar) progressBar.style.pointerEvents = 'none';
+        if (volumeRange) volumeRange.disabled = true;
+        
+        console.log('🚫 Controles desabilitados');
+    }
+}
+
+function updatePlayerStatus(mode) {
+    if (!playerStatus) return;
+    
+    switch(mode) {
+        case 'solo':
+            playerStatus.innerHTML = '<i class="fas fa-headphones"></i> Modo Solo';
+            break;
+        case 'host':
+            playerStatus.innerHTML = '<i class="fas fa-crown"></i> Você controla';
+            break;
+        case 'democratic':
+            playerStatus.innerHTML = '<i class="fas fa-vote-yea"></i> Controle compartilhado';
+            
+            const timeSinceAction = Date.now() - lastPlayerAction;
+            if (timeSinceAction < actionDebounceTime * 2) {
+                playerStatus.innerHTML += ' <i class="fas fa-clock"></i>';
+                playerStatus.title = 'Aguardando sincronização...';
+            } else {
+                playerStatus.title = 'Você pode controlar o player';
+            }
+            break;
+        case 'member':
+            playerStatus.innerHTML = '<i class="fas fa-music"></i> Ouvindo festa';
+            break;
+    }
+}
+
+// --- Player Functions ---
+
 function getCurrentTrackId() {
     if (!player.src) return null;
     const match = player.src.match(/\/stream\/(\d+)/);
     return match ? parseInt(match[1]) : null;
 }
 
-// --- Library & Upload ---
-
-async function fetchLibrary() {
-    try {
-        const res = await fetch(new URL('/library', window.API_BASE_URL));
-        if (!res.ok) throw new Error('Falha ao carregar biblioteca');
-        
-        const data = await res.json();
-        libraryList.innerHTML = '';
-        
-        if (data.length === 0) {
-            libraryList.innerHTML = `
-                <li class="list-group-item text-center">
-                    <div class="text-muted">
-                        <h6>📁 Biblioteca vazia</h6>
-                        <small>Faça upload de suas músicas favoritas!</small>
-                    </div>
-                </li>
-            `;
-            return;
-        }
-        
-        data.forEach(track => {
-            const li = document.createElement('li');
-            li.className = 'list-group-item d-flex justify-content-between align-items-center';
-            li.innerHTML = `
-                <div class="flex-grow-1">
-                    <strong>${track.title}</strong>
-                    <small class="d-block text-muted">ID: ${track.id}</small>
-                </div>
-            `;
-            
-            const playBtn = document.createElement('button');
-            playBtn.className = 'btn btn-outline-primary btn-sm';
-            playBtn.innerHTML = '▶️ Tocar';
-            playBtn.onclick = () => playTrack(track.id);
-            
-            li.appendChild(playBtn);
-            libraryList.appendChild(li);
-        });
-    } catch (error) {
-        console.error('Error fetching library:', error);
-        showNotification('Erro ao carregar biblioteca', 'error');
-        libraryList.innerHTML = '<li class="list-group-item text-center text-danger">Erro ao carregar biblioteca</li>';
+function loadTrack(trackId) {
+    if (!trackId) return;
+    
+    const newSrc = new URL(`/stream/${trackId}`, window.API_BASE_URL).href;
+    player.src = newSrc;
+    player.load();
+    
+    // Update track info
+    const track = libraryData.find(t => t.id === trackId);
+    if (track) {
+        if (playerTrackTitle) playerTrackTitle.textContent = track.title;
+        if (currentTrackTitle) currentTrackTitle.textContent = track.title;
+        if (currentTrackArtist) currentTrackArtist.textContent = `ID: ${track.id}`;
     }
 }
 
@@ -578,241 +605,179 @@ function playTrack(trackId) {
             lastPlayerAction = Date.now();
             sendMessage('player_action', { action: 'change_track', track_id: trackId });
             showNotification('Alterando música da festa...', 'info');
-            console.log('📤 Enviando ação: change_track to', trackId);
         } else {
             showNotification('Você não pode controlar o player neste modo', 'warning');
         }
     } else {
-        // Standard non-party playback
-        player.src = new URL(`/stream/${trackId}`, window.API_BASE_URL);
+        loadTrack(trackId);
         player.play().catch(e => {
             console.warn("Play failed:", e);
             showNotification('Erro ao reproduzir música', 'error');
         });
     }
 }
-// --- Event Listeners ---
 
-function setupEventListeners() {
-    // Verify essential elements exist
-    if (!player) {
-        console.error('❌ Player element not found');
-        return;
-    }
+function formatTime(seconds) {
+    if (isNaN(seconds)) return '0:00';
     
-    // Player events with debouncing and smart logic
-    player.onplay = () => {
-        console.log('🎵 Player play event - currentPartyId:', currentPartyId, 'isSyncing:', isSyncing);
-        
-        // Only send to server if in party mode and not syncing
-        if (!isSyncing && currentPartyId) {
-            const canControl = isHost || currentPartyMode === 'democratic';
-            console.log('▶️ Play event - canControl:', canControl, 'isHost:', isHost, 'mode:', currentPartyMode);
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.floor(seconds % 60);
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+}
+
+function seekToTime(time) {
+    if (!player || !player.duration) return;
+    
+    const clampedTime = Math.max(0, Math.min(player.duration, time));
+    console.log(`🎯 Seeking to time: ${formatTime(clampedTime)}`);
+    
+    if (currentPartyId) {
+        const canControl = isHost || currentPartyMode === 'democratic';
+        if (canControl) {
+            lastPlayerAction = Date.now();
+            player.currentTime = clampedTime;
             
-            if (canControl) {
-                lastPlayerAction = Date.now();
-                sendMessage('player_action', { action: 'play' });
-                console.log('📤 Enviando ação: play');
-            }
-        }
-        // In solo mode, just let it play normally (no server communication)
-    };
-    
-    player.onpause = () => {
-        console.log('🎵 Player pause event - currentPartyId:', currentPartyId, 'isSyncing:', isSyncing);
-        
-        // Only send to server if in party mode and not syncing
-        if (!isSyncing && currentPartyId) {
-            const canControl = isHost || currentPartyMode === 'democratic';
-            console.log('⏸️ Pause event - canControl:', canControl, 'isHost:', isHost, 'mode:', currentPartyMode);
-            
-            if (canControl) {
-                lastPlayerAction = Date.now();
-                sendMessage('player_action', { action: 'pause' });
-                console.log('📤 Enviando ação: pause');
-            }
-        }
-        // In solo mode, just let it pause normally (no server communication)
-    };
-    
-    // Handle seeking - works in both solo and party modes
-    player.addEventListener('seeking', () => {
-        console.log('🔄 Player seeking event - currentPartyId:', currentPartyId, 'isSyncing:', isSyncing);
-        console.log('🔄 Seeking context:', {
-            isHost,
-            currentPartyMode,
-            playerControlsDisabled: playerControls.classList.contains('disabled'),
-            playerPointerEvents: player.style.pointerEvents
-        });
-        
-        // Only send to server if in party mode and not syncing
-        if (!isSyncing && currentPartyId) {
-            const canControl = isHost || currentPartyMode === 'democratic';
-            console.log('🔄 Seeking event - canControl:', canControl, 'isHost:', isHost, 'mode:', currentPartyMode);
-            
-            if (canControl) {
-                // Clear any pending seek
-                if (pendingSeek) {
-                    clearTimeout(pendingSeek);
-                }
-                
-                // Debounce the seek action with different timing based on mode
-                const debounceTime = currentPartyMode === 'democratic' ? democraticDebounceTime : actionDebounceTime;
-                pendingSeek = setTimeout(() => {
-                    lastPlayerAction = Date.now();
-                    sendMessage('player_action', { 
-                        action: 'seek', 
-                        currentTime: player.currentTime 
-                    });
-                    console.log('📤 Enviando ação: seek to', player.currentTime, `(${currentPartyMode} mode)`);
-                    pendingSeek = null;
-                }, debounceTime);
-            } else {
-                console.log('🚫 Seek bloqueado - sem permissão de controle');
-            }
-        } else {
-            // In solo mode, seeking works normally without server communication
-            console.log('🔄 Seeking to:', player.currentTime, '(Solo mode)');
-        }
-    });
-    
-    // Also handle seeked event for immediate feedback
-    player.onseeked = () => {
-        console.log('✅ Player seeked event - currentPartyId:', currentPartyId, 'isSyncing:', isSyncing);
-        
-        // Only send to server if in party mode and not syncing
-        if (!isSyncing && currentPartyId) {
-            const canControl = isHost || currentPartyMode === 'democratic';
-            console.log('✅ Seeked event - canControl:', canControl, 'isHost:', isHost, 'mode:', currentPartyMode);
-            
-            if (canControl && !pendingSeek) {
-                // Only send if no pending seek (avoid double-sending)
-                lastPlayerAction = Date.now();
-                sendMessage('player_action', { 
-                    action: 'seek', 
-                    currentTime: player.currentTime 
-                });
-                console.log('📤 Enviando ação: seeked to', player.currentTime);
-            }
-        } else {
-            // In solo mode, seeked works normally
-            console.log('✅ Seeked to:', player.currentTime, '(Solo mode)');
-        }
-    };
-
-    // Button events
-    if (createPartyBtn) {
-        createPartyBtn.onclick = () => {
-            if (!currentPartyId) {
-                setLoadingState(createPartyBtn, true, '⏳ Criando...');
-                sendMessage('create_party', {});
-                setTimeout(() => {
-                    setLoadingState(createPartyBtn, false);
-                    // Safely update button text
-                    const btnText = createPartyBtn.querySelector('.btn-text');
-                    if (btnText) {
-                        btnText.textContent = '➕ Criar Festa';
-                    } else {
-                        createPartyBtn.textContent = '➕ Criar Festa';
-                    }
-                }, 2000);
-            }
-        };
-    }
-    
-    if (leavePartyBtn) {
-        leavePartyBtn.onclick = () => {
-            if (currentPartyId) {
-                if (confirm('Tem certeza que deseja sair da festa?')) {
-                    sendMessage('leave_party', {});
-                    showNotification('Saindo da festa...', 'info');
-                }
-            }
-        };
-    }
-    
-    if (democraticModeToggle) {
-        democraticModeToggle.onchange = (e) => {
-            if (isHost) {
-                sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
-                showNotification(
-                    e.target.checked ? 'Modo democrático ativado!' : 'Modo host ativado!', 
-                    'success'
-                );
-            }
-        };
-    }
-
-    // Upload form
-    const uploadForm = document.getElementById('uploadForm');
-    if (uploadForm) {
-        uploadForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const fileInput = document.getElementById('audioFile');
-            const submitBtn = e.target.querySelector('button[type="submit"]');
-            
-            if (!fileInput.files.length) {
-                showNotification('Selecione um arquivo de áudio', 'warning');
-                return;
-            }
-
-            const file = fileInput.files[0];
-            const maxSize = 50 * 1024 * 1024; // 50MB
-        if (file.size > maxSize) {
-            showNotification('Arquivo muito grande. Máximo: 50MB', 'error');
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('file', file);
-        
-        const status = document.getElementById('uploadStatus');
-        status.className = 'alert alert-info';
-        status.innerHTML = '⏳ Fazendo upload...';
-        setLoadingState(submitBtn, true, '⏳ Enviando...');
-
-        try {
-            const res = await fetch(new URL('/upload', window.API_BASE_URL), { 
-                method: 'POST', 
-                body: formData 
+            // Send seek action to server
+            sendMessage('player_action', { 
+                action: 'seek', 
+                currentTime: clampedTime 
             });
             
-            if (res.ok) {
-                const result = await res.json();
-                status.className = 'alert alert-success';
-                status.innerHTML = `✅ Upload realizado com sucesso! <strong>${result.title}</strong>`;
-                fileInput.value = '';
-                fetchLibrary();
-                showNotification('Música adicionada à biblioteca!', 'success');
-                
-                setTimeout(() => {
-                    status.innerHTML = '';
-                    status.className = '';
-                }, 5000);
-            } else {
-                const err = await res.json();
-                throw new Error(err.detail || 'Erro no upload');
-            }
-        } catch (error) {
-            console.error('Upload error:', error);
-            status.className = 'alert alert-danger';
-            status.innerHTML = `❌ Erro: ${error.message}`;
-            showNotification('Erro no upload', 'error');
-        } finally {
-            setLoadingState(submitBtn, false);
-            // Safely update button text
-            const btnText = submitBtn.querySelector('.btn-text');
-            if (btnText) {
-                btnText.textContent = '📤 Fazer Upload';
-            } else {
-                submitBtn.textContent = '📤 Fazer Upload';
-            }
+            // Show better feedback based on party mode
+            const modeText = isHost ? 'host' : 'modo democrático';
+            showNotification(`Alterando posição (${modeText})...`, 'info');
+        } else {
+            showNotification('Apenas o host ou membros em modo democrático podem controlar o player', 'warning');
         }
-        });
+    } else {
+        // Solo mode - direct seek with immediate feedback
+        player.currentTime = clampedTime;
+        showNotification(`Posição alterada para ${formatTime(clampedTime)}`, 'success');
     }
 }
 
-// --- Party Actions ---
+function updateProgressVisual(percentage) {
+    if (!progressFill || !progressHandle) return;
+    
+    const clampedPercentage = Math.max(0, Math.min(100, percentage * 100));
+    progressFill.style.width = `${clampedPercentage}%`;
+    progressHandle.style.left = `${clampedPercentage}%`;
+}
+
+function updateProgress() {
+    if (!player || !progressFill || !progressHandle || !currentTimeDisplay) return;
+    
+    const current = player.currentTime;
+    const duration = player.duration;
+    
+    if (isNaN(duration) || duration === 0) return;
+    
+    const percentage = (current / duration) * 100;
+    progressFill.style.width = `${percentage}%`;
+    progressHandle.style.left = `${percentage}%`;
+    
+    currentTimeDisplay.textContent = formatTime(current);
+    
+    if (totalTimeDisplay) {
+        totalTimeDisplay.textContent = formatTime(duration);
+    }
+}
+
+// --- Library Functions ---
+
+async function fetchLibrary() {
+    try {
+        const res = await fetch(new URL('/library', window.API_BASE_URL));
+        if (!res.ok) throw new Error('Falha ao carregar biblioteca');
+        
+        libraryData = await res.json();
+        filteredLibrary = [...libraryData];
+        renderLibrary();
+        
+    } catch (error) {
+        console.error('Error fetching library:', error);
+        showNotification('Erro ao carregar biblioteca', 'error');
+        if (libraryList) {
+            libraryList.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p>Erro ao carregar biblioteca</p>
+                </div>
+            `;
+        }
+    }
+}
+
+function renderLibrary() {
+    if (!libraryList) return;
+    
+    libraryList.innerHTML = '';
+    
+    if (filteredLibrary.length === 0) {
+        libraryList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-music"></i>
+                <p>Biblioteca vazia</p>
+                <small>Faça upload de suas músicas favoritas!</small>
+            </div>
+        `;
+        return;
+    }
+    
+    filteredLibrary.forEach(track => {
+        const libraryItem = document.createElement('div');
+        libraryItem.className = 'library-item';
+        libraryItem.innerHTML = `
+            <div class="library-item-icon">
+                <i class="fas fa-music"></i>
+            </div>
+            <div class="library-item-info">
+                <div class="library-item-title">${track.title}</div>
+                <div class="library-item-meta">ID: ${track.id}</div>
+            </div>
+            <div class="library-item-actions">
+                <button class="btn btn-primary library-action-btn" onclick="playTrack(${track.id})">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button class="btn btn-outline-secondary library-action-btn" onclick="addToQueue(${track.id})" title="Adicionar à fila">
+                    <i class="fas fa-plus"></i>
+                </button>
+            </div>
+        `;
+        libraryList.appendChild(libraryItem);
+    });
+}
+
+function filterLibrary(searchTerm) {
+    if (!searchTerm.trim()) {
+        filteredLibrary = [...libraryData];
+    } else {
+        filteredLibrary = libraryData.filter(track => 
+            track.title.toLowerCase().includes(searchTerm.toLowerCase())
+        );
+    }
+    renderLibrary();
+}
+
+function addToQueue(trackId) {
+    if (!currentPartyId) {
+        showNotification('Você precisa estar em uma festa para usar a fila', 'warning');
+        return;
+    }
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    if (!canControl) {
+        showNotification('Você não pode adicionar músicas à fila neste modo', 'warning');
+        return;
+    }
+    
+    // For now, just play the track directly
+    // In a full implementation, you'd send a queue message to the server
+    playTrack(trackId);
+    showNotification('Música adicionada à reprodução', 'success');
+}
+
+// --- Party Functions ---
 
 function joinParty(partyId) {
     if (!currentPartyId) {
@@ -821,88 +786,557 @@ function joinParty(partyId) {
     }
 }
 
-function scrollToParties() {
-    document.getElementById('partyList').scrollIntoView({ 
-        behavior: 'smooth', 
-        block: 'center' 
+function sendChatMessage() {
+    if (!chatInput || !currentPartyId) return;
+    
+    const message = chatInput.value.trim();
+    if (!message) return;
+    
+    sendMessage('chat_message', { 
+        text: message,
+        party_id: currentPartyId 
     });
+    
+    chatInput.value = '';
+}
+
+// --- Event Listeners ---
+
+function setupEventListeners() {
+    // Player Events
+    if (player) {
+        player.addEventListener('play', () => {
+            if (playPauseIcon) playPauseIcon.className = 'fas fa-pause';
+            
+            if (!isSyncing && currentPartyId) {
+                const canControl = isHost || currentPartyMode === 'democratic';
+                if (canControl) {
+                    lastPlayerAction = Date.now();
+                    sendMessage('player_action', { action: 'play' });
+                }
+            }
+        });
+        
+        player.addEventListener('pause', () => {
+            if (playPauseIcon) playPauseIcon.className = 'fas fa-play';
+            
+            if (!isSyncing && currentPartyId) {
+                const canControl = isHost || currentPartyMode === 'democratic';
+                if (canControl) {
+                    lastPlayerAction = Date.now();
+                    sendMessage('player_action', { action: 'pause' });
+                }
+            }
+        });
+        
+        player.addEventListener('timeupdate', updateProgress);
+        
+        player.addEventListener('seeking', () => {
+            if (!isSyncing && currentPartyId) {
+                const canControl = isHost || currentPartyMode === 'democratic';
+                if (canControl) {
+                    if (pendingSeek) clearTimeout(pendingSeek);
+                    
+                    const debounceTime = currentPartyMode === 'democratic' ? democraticDebounceTime : actionDebounceTime;
+                    pendingSeek = setTimeout(() => {
+                        lastPlayerAction = Date.now();
+                        sendMessage('player_action', { 
+                            action: 'seek', 
+                            currentTime: player.currentTime 
+                        });
+                        pendingSeek = null;
+                    }, debounceTime);
+                }
+            }
+        });
+        
+        player.addEventListener('loadedmetadata', () => {
+            updateProgress();
+        });
+    }
+
+    // Player Control Buttons
+    if (playPauseBtn) {
+        playPauseBtn.addEventListener('click', () => {
+            if (player.paused) {
+                player.play();
+            } else {
+                player.pause();
+            }
+        });
+    }
+
+    if (prevBtn) {
+        prevBtn.addEventListener('click', () => {
+            // Implement previous track logic
+            player.currentTime = 0;
+        });
+    }
+
+    if (nextBtn) {
+        nextBtn.addEventListener('click', () => {
+            // Implement next track logic
+            showNotification('Próxima música não implementada ainda', 'info');
+        });
+    }
+
+    // Progress Bar - Enhanced seek controls
+    if (progressBar) {
+        let isDragging = false;
+        let isHovering = false;
+        
+        // Add hover effects
+        progressBar.addEventListener('mouseenter', () => {
+            isHovering = true;
+            progressBar.classList.add('hover');
+        });
+        
+        progressBar.addEventListener('mouseleave', () => {
+            isHovering = false;
+            if (!isDragging) {
+                progressBar.classList.remove('hover');
+                // Clear tooltip
+                const container = progressBar.closest('.progress-bar-container');
+                if (container) container.removeAttribute('data-time');
+            }
+        });
+        
+        // Show time tooltip on hover
+        progressBar.addEventListener('mousemove', (e) => {
+            if (!player.duration || isDragging) return;
+            
+            const rect = progressBar.getBoundingClientRect();
+            const percentage = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            const previewTime = percentage * player.duration;
+            
+            const container = progressBar.closest('.progress-bar-container');
+            if (container) {
+                container.setAttribute('data-time', formatTime(previewTime));
+            }
+        });
+        
+        // Handle click to seek anywhere on the progress bar
+        progressBar.addEventListener('click', (e) => {
+            if (!player.duration || isDragging) return;
+            
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const rect = progressBar.getBoundingClientRect();
+            const percentage = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            const newTime = percentage * player.duration;
+            
+            console.log(`🎯 Click seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%)`);
+            
+            // Add loading state to button
+            const container = progressBar.closest('.progress-bar-container');
+            if (container) container.classList.add('seeking');
+            
+            setTimeout(() => {
+                if (container) container.classList.remove('seeking');
+            }, 500);
+            
+            seekToTime(newTime);
+        });
+        
+        // Enhanced mouse drag handling
+        progressBar.addEventListener('mousedown', (e) => {
+            if (!player.duration) return;
+            
+            e.preventDefault();
+            e.stopPropagation();
+            
+            isDragging = true;
+            progressBar.classList.add('dragging');
+            document.body.style.userSelect = 'none';
+            
+            const startDrag = (event) => {
+                if (!isDragging || !player.duration) return;
+                
+                const rect = progressBar.getBoundingClientRect();
+                const percentage = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+                const newTime = percentage * player.duration;
+                
+                // Update visual progress while dragging
+                updateProgressVisual(percentage);
+                
+                // Update time display with preview
+                if (currentTimeDisplay) {
+                    currentTimeDisplay.textContent = formatTime(newTime);
+                    currentTimeDisplay.classList.add('seeking');
+                }
+                
+                // Update tooltip
+                const container = progressBar.closest('.progress-bar-container');
+                if (container) {
+                    container.setAttribute('data-time', formatTime(newTime));
+                }
+            };
+            
+            const endDrag = (event) => {
+                if (!isDragging || !player.duration) return;
+                
+                const rect = progressBar.getBoundingClientRect();
+                const percentage = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+                const newTime = percentage * player.duration;
+                
+                isDragging = false;
+                progressBar.classList.remove('dragging', 'hover');
+                document.body.style.userSelect = '';
+                
+                if (currentTimeDisplay) {
+                    currentTimeDisplay.classList.remove('seeking');
+                }
+                
+                // Clear tooltip
+                const container = progressBar.closest('.progress-bar-container');
+                if (container) container.removeAttribute('data-time');
+                
+                document.removeEventListener('mousemove', startDrag);
+                document.removeEventListener('mouseup', endDrag);
+                
+                console.log(`🎯 Drag seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%)`);
+                seekToTime(newTime);
+            };
+            
+            document.addEventListener('mousemove', startDrag);
+            document.addEventListener('mouseup', endDrag);
+            
+            // Handle the initial click position
+            startDrag(e);
+        });
+        
+        // Enhanced touch events for mobile
+        progressBar.addEventListener('touchstart', (e) => {
+            if (!player.duration) return;
+            
+            e.preventDefault();
+            isDragging = true;
+            progressBar.classList.add('dragging');
+            
+            const touch = e.touches[0];
+            const rect = progressBar.getBoundingClientRect();
+            const percentage = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
+            const newTime = percentage * player.duration;
+            
+            updateProgressVisual(percentage);
+            if (currentTimeDisplay) {
+                currentTimeDisplay.textContent = formatTime(newTime);
+                currentTimeDisplay.classList.add('seeking');
+            }
+        }, { passive: false });
+        
+        progressBar.addEventListener('touchmove', (e) => {
+            if (!isDragging || !player.duration) return;
+            e.preventDefault();
+            
+            const touch = e.touches[0];
+            const rect = progressBar.getBoundingClientRect();
+            const percentage = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
+            const newTime = percentage * player.duration;
+            
+            updateProgressVisual(percentage);
+            if (currentTimeDisplay) {
+                currentTimeDisplay.textContent = formatTime(newTime);
+            }
+        }, { passive: false });
+        
+        progressBar.addEventListener('touchend', (e) => {
+            if (!isDragging || !player.duration) return;
+            e.preventDefault();
+            
+            const touch = e.changedTouches[0];
+            const rect = progressBar.getBoundingClientRect();
+            const percentage = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
+            const newTime = percentage * player.duration;
+            
+            isDragging = false;
+            progressBar.classList.remove('dragging');
+            
+            if (currentTimeDisplay) {
+                currentTimeDisplay.classList.remove('seeking');
+            }
+            
+            console.log(`🎯 Touch seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%)`);
+            seekToTime(newTime);
+        }, { passive: false });
+        
+        // Keyboard accessibility
+        progressBar.addEventListener('keydown', (e) => {
+            if (!player.duration) return;
+            
+            let seekAmount = 0;
+            switch(e.key) {
+                case 'ArrowLeft':
+                    seekAmount = -10; // 10 seconds back
+                    break;
+                case 'ArrowRight':
+                    seekAmount = 10; // 10 seconds forward
+                    break;
+                case 'Home':
+                    seekToTime(0);
+                    e.preventDefault();
+                    return;
+                case 'End':
+                    seekToTime(player.duration - 1);
+                    e.preventDefault();
+                    return;
+                default:
+                    return;
+            }
+            
+            if (seekAmount !== 0) {
+                e.preventDefault();
+                const newTime = Math.max(0, Math.min(player.duration, player.currentTime + seekAmount));
+                seekToTime(newTime);
+            }
+        });
+        
+        // Make progress bar focusable for keyboard navigation
+        progressBar.setAttribute('tabindex', '0');
+        progressBar.setAttribute('role', 'slider');
+        progressBar.setAttribute('aria-label', 'Seek track position');
+    }
+
+    // Volume Control
+    if (volumeRange) {
+        volumeRange.addEventListener('input', (e) => {
+            const volume = parseInt(e.target.value);
+            currentVolume = volume;
+            player.volume = volume / 100;
+            
+            updateVolumeIcon(volume);
+        });
+    }
+
+    if (volumeBtn) {
+        volumeBtn.addEventListener('click', () => {
+            if (isMuted) {
+                player.volume = currentVolume / 100;
+                volumeRange.value = currentVolume;
+                isMuted = false;
+            } else {
+                player.volume = 0;
+                volumeRange.value = 0;
+                isMuted = true;
+            }
+            updateVolumeIcon(isMuted ? 0 : currentVolume);
+        });
+    }
+
+    // Library Search
+    if (librarySearch) {
+        librarySearch.addEventListener('input', (e) => {
+            filterLibrary(e.target.value);
+        });
+    }
+
+    // Enhanced Party Controls
+    if (createPartyBtn) {
+        createPartyBtn.addEventListener('click', () => {
+            if (!currentPartyId) {
+                sendMessage('create_party', {});
+                showNotification('Criando festa...', 'info');
+                
+                // Disable button temporarily to prevent double clicks
+                createPartyBtn.disabled = true;
+                setTimeout(() => {
+                    if (createPartyBtn) createPartyBtn.disabled = false;
+                }, 2000);
+            } else {
+                showNotification('Você já está em uma festa', 'warning');
+            }
+        });
+    }
+
+    if (leavePartyBtn) {
+        leavePartyBtn.addEventListener('click', () => {
+            console.log('🚪 Leave party button clicked, currentPartyId:', currentPartyId);
+            
+            if (currentPartyId) {
+                if (confirm('Tem certeza que deseja sair da festa?')) {
+                    console.log('🚪 User confirmed leaving party');
+                    
+                    // Send leave message
+                    sendMessage('leave_party', { party_id: currentPartyId });
+                    showNotification('Saindo da festa...', 'info');
+                    
+                    // Force UI update in case WebSocket response is delayed
+                    setTimeout(() => {
+                        if (currentPartyId) {
+                            console.log('🚪 Forçando saída da festa na UI');
+                            forceLeaveParty();
+                        }
+                    }, 3000);
+                    
+                    // Disable button temporarily
+                    leavePartyBtn.disabled = true;
+                    setTimeout(() => {
+                        if (leavePartyBtn) leavePartyBtn.disabled = false;
+                    }, 2000);
+                } else {
+                    console.log('🚪 User cancelled leaving party');
+                }
+            } else {
+                console.log('🚪 Not in a party, cannot leave');
+                showNotification('Você não está em uma festa', 'warning');
+            }
+        });
+    }
+
+    if (democraticModeToggle) {
+        democraticModeToggle.addEventListener('change', (e) => {
+            if (isHost) {
+                sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
+                showNotification(
+                    e.target.checked ? 'Modo democrático ativado!' : 'Modo host ativado!', 
+                    'success'
+                );
+            }
+        });
+    }
+
+    // Chat
+    if (sendChatBtn) {
+        sendChatBtn.addEventListener('click', sendChatMessage);
+    }
+
+    if (chatInput) {
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendChatMessage();
+            }
+        });
+    }
+
+    // Upload Form
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (!audioFile.files.length) {
+                showNotification('Selecione um arquivo de áudio', 'warning');
+                return;
+            }
+
+            const file = audioFile.files[0];
+            const maxSize = 50 * 1024 * 1024; // 50MB
+            if (file.size > maxSize) {
+                showNotification('Arquivo muito grande. Máximo: 50MB', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            if (uploadStatus) {
+                uploadStatus.className = 'upload-status';
+                uploadStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fazendo upload...';
+            }
+
+            try {
+                const res = await fetch(new URL('/upload', window.API_BASE_URL), { 
+                    method: 'POST', 
+                    body: formData 
+                });
+                
+                if (res.ok) {
+                    const result = await res.json();
+                    if (uploadStatus) {
+                        uploadStatus.innerHTML = `<i class="fas fa-check"></i> Upload realizado com sucesso! <strong>${result.title}</strong>`;
+                    }
+                    audioFile.value = '';
+                    fetchLibrary();
+                    showNotification('Música adicionada à biblioteca!', 'success');
+                    
+                    setTimeout(() => {
+                        if (uploadStatus) uploadStatus.innerHTML = '';
+                    }, 5000);
+                } else {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Erro no upload');
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                if (uploadStatus) {
+                    uploadStatus.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Erro: ${error.message}`;
+                }
+                showNotification('Erro no upload', 'error');
+            }
+        });
+    }
+}
+
+function updateVolumeIcon(volume) {
+    if (!volumeIcon) return;
+    
+    if (volume === 0) {
+        volumeIcon.className = 'fas fa-volume-mute';
+    } else if (volume < 50) {
+        volumeIcon.className = 'fas fa-volume-down';
+    } else {
+        volumeIcon.className = 'fas fa-volume-up';
+    }
 }
 
 // --- Initialization ---
 
-window.onload = () => {
+window.addEventListener('load', () => {
     console.log('🌐 Window loaded');
     console.log('📱 User Agent:', navigator.userAgent);
     
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     console.log('📱 Is Mobile:', isMobile);
     
-    // Detecta se é mobile e adiciona classe específica
     if (isMobile) {
         document.body.classList.add('mobile-device');
-        console.log('📱 Classe mobile-device adicionada');
     }
     
-    // Adiciona info de debug se for mobile
     if (isMobile && debugInfo) {
         debugInfo.style.display = 'block';
-        debugUserAgent.textContent = navigator.userAgent.substring(0, 50) + '...';
-        debugTimestamp.textContent = new Date().toISOString();
+        if (debugUserAgent) debugUserAgent.textContent = navigator.userAgent.substring(0, 50) + '...';
+        if (debugTimestamp) debugTimestamp.textContent = new Date().toISOString();
     }
     
-    // Inicializa entrada de nome de forma mais robusta
     initializeNameEntry(isMobile);
-};
+});
 
 function initializeNameEntry(isMobile) {
-    console.log('� Inicializando entrada de nome...');
+    console.log('🚪 Inicializando entrada de nome...');
     
-    // Aguarda um pouco para garantir que Bootstrap esteja carregado
     setTimeout(() => {
-        // Tenta usar o modal primeiro
         try {
             console.log('🚪 Tentando exibir modal...');
             nameModal.show();
             console.log('✅ Modal exibido com sucesso');
             
-            // Se for mobile, configura fallback após um tempo
             if (isMobile) {
                 setupMobileFallback();
             }
             
         } catch (error) {
             console.error('❌ Erro ao exibir modal:', error);
-            
-            // Fallback imediato para entrada alternativa
-            console.log('🔧 Usando entrada alternativa devido a erro no modal');
             showAlternativeEntry();
         }
     }, 200);
 }
 
 function setupMobileFallback() {
-    // Mostra botão alternativo após 5 segundos se for mobile
     setTimeout(() => {
         const modalElement = document.getElementById('nameModal');
-        const isModalVisible = modalElement.classList.contains('show') || 
-                              modalElement.style.display !== 'none';
+        const isModalVisible = modalElement.classList.contains('show');
         
         if (isModalVisible && !userName && alternativeJoinButton) {
             alternativeJoinButton.classList.remove('d-none');
-            console.log('🔧 Botão alternativo disponibilizado');
         }
     }, 5000);
     
-    // Verifica se modal travou após 10 segundos
     setTimeout(() => {
         const modalElement = document.getElementById('nameModal');
-        const isModalVisible = modalElement.classList.contains('show') || 
-                              modalElement.style.display !== 'none';
+        const isModalVisible = modalElement.classList.contains('show');
         
         if (isModalVisible && !userName) {
-            console.log('⚠️ Modal pode estar com problema no mobile');
             showNotification('Problemas com o modal? Use a entrada alternativa.', 'info');
-            
             if (alternativeJoinButton) {
                 alternativeJoinButton.classList.remove('d-none');
             }
@@ -910,35 +1344,35 @@ function setupMobileFallback() {
     }, 10000);
 }
 
-joinButton.onclick = () => {
-    console.log('🔘 Botão principal clicado');
-    const name = nameInput.value.trim();
-    processUserEntry(name, false);
-};
+// Name Entry Event Listeners
+if (joinButton) {
+    joinButton.addEventListener('click', () => {
+        const name = nameInput.value.trim();
+        processUserEntry(name, false);
+    });
+}
 
-// Event listener para entrada alternativa
 if (alternativeSubmitButton) {
-    alternativeSubmitButton.onclick = () => {
-        console.log('� Botão alternativo clicado');
+    alternativeSubmitButton.addEventListener('click', () => {
         const name = alternativeNameInput.value.trim();
         processUserEntry(name, true);
-    };
+    });
 }
 
-// Event listener para mostrar entrada alternativa
 if (alternativeJoinButton) {
-    alternativeJoinButton.onclick = () => {
+    alternativeJoinButton.addEventListener('click', () => {
         showAlternativeEntry();
-    };
+    });
 }
 
-// Allow enter key on name inputs
-nameInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        joinButton.click();
-    }
-});
+if (nameInput) {
+    nameInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            joinButton.click();
+        }
+    });
+}
 
 if (alternativeNameInput) {
     alternativeNameInput.addEventListener('keypress', (e) => {
@@ -949,103 +1383,31 @@ if (alternativeNameInput) {
     });
 }
 
-// Handle modal events properly for mobile
-document.getElementById('nameModal').addEventListener('shown.bs.modal', function () {
-    // Focus on input when modal is shown (helps with mobile)
-    nameInput.focus();
-});
-
-document.getElementById('nameModal').addEventListener('hidden.bs.modal', function () {
-    // Ensure modal backdrop is removed (common issue on mobile)
-    const backdrops = document.querySelectorAll('.modal-backdrop');
-    backdrops.forEach(backdrop => backdrop.remove());
-    
-    // Remove modal-open class from body (mobile issue)
-    document.body.classList.remove('modal-open');
-    document.body.style.overflow = '';
-    document.body.style.paddingRight = '';
-});
-
-function init() {
-    console.log('🎵 Iniciando Torbware Records...');
-    console.log('User ID:', userId);
-    console.log('User Name:', userName);
-    console.log('User Agent:', navigator.userAgent);
-    
-    // Check if running on mobile
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    if (isMobile) {
-        console.log('📱 Detectado dispositivo móvel');
-        // Add mobile-specific class
-        document.body.classList.add('mobile-device');
-    }
-    
-    // Verify required elements exist
-    if (!player || !playerControls) {
-        console.error('❌ Elementos essenciais do player não encontrados!');
-        showNotification('Erro na inicialização: elementos do player não encontrados', 'error');
-        return;
-    }
-    
-    connectWebSocket();
-    fetchLibrary();
-    setupEventListeners();
-    updatePlayerControls(true); // Enable controls for solo mode
-    updatePlayerStatus('solo');
-    
-    // Add some helpful tooltips
-    if (createPartyBtn) {
-        createPartyBtn.title = 'Crie sua própria festa musical';
-    }
-    if (leavePartyBtn) {
-        leavePartyBtn.title = 'Sair da festa atual';
-    }
-    
-    console.log('✅ Torbware Records inicializado com sucesso!');
-    showNotification('Bem-vindo ao Torbware Records!', 'success');
-}
-
-// --- Helper Functions ---
-
-function getPartyMode() {
-    // Return current party mode from global state
-    return currentPartyMode || 'host';
-}
-
-// --- Alternative Entry Logic ---
-
 function showAlternativeEntry() {
     console.log('🔧 Mostrando entrada alternativa');
     
-    // Força fechamento completo do modal primeiro
     const modalElement = document.getElementById('nameModal');
     modalElement.style.display = 'none';
     modalElement.classList.remove('show');
     
-    // Remove todos os backdrops
     const backdrops = document.querySelectorAll('.modal-backdrop');
     backdrops.forEach(backdrop => backdrop.remove());
     
-    // Limpa classes do body e adiciona classe para entrada alternativa
     document.body.classList.remove('modal-open');
     document.body.classList.add('alternative-active');
     document.body.style.overflow = '';
     document.body.style.paddingRight = '';
     
-    // Mostra entrada alternativa
     alternativeEntry.classList.remove('d-none');
     alternativeEntry.classList.add('show');
     alternativeEntry.style.display = 'flex';
-    alternativeEntry.style.setProperty('display', 'flex', 'important');
     
-    // Foca no input
     setTimeout(() => {
-        alternativeNameInput.focus();
+        if (alternativeNameInput) alternativeNameInput.focus();
     }, 100);
 }
 
 function hideAlternativeEntry() {
-    console.log('🔧 Escondendo entrada alternativa');
     document.body.classList.remove('alternative-active');
     alternativeEntry.style.display = 'none';
     alternativeEntry.classList.remove('show');
@@ -1053,17 +1415,15 @@ function hideAlternativeEntry() {
 }
 
 function processUserEntry(name, isAlternative = false) {
-    console.log('👤 Processando entrada de usuário:', name, 'Alternativa:', isAlternative);
+    console.log('👤 Processando entrada:', name, 'Alternativa:', isAlternative);
     
     if (!name || name.length < 2 || name.length > 20) {
-        const message = 'Nome deve ter entre 2 e 20 caracteres';
-        showNotification(message, 'warning');
+        showNotification('Nome deve ter entre 2 e 20 caracteres', 'warning');
         return false;
     }
     
-    // Verifica se já existe um usuário (evita duplicação)
     if (userName && userId) {
-        console.log('⚠️ Usuário já existe, ignorando nova entrada');
+        console.log('⚠️ Usuário já existe');
         return false;
     }
     
@@ -1072,27 +1432,56 @@ function processUserEntry(name, isAlternative = false) {
     
     console.log('✅ Usuário criado:', {userId, userName});
     
-    // Esconde todas as interfaces de entrada
     hideAlternativeEntry();
     
     const modalElement = document.getElementById('nameModal');
     modalElement.style.display = 'none';
     modalElement.classList.remove('show');
     
-    // Remove backdrop
     const backdrops = document.querySelectorAll('.modal-backdrop');
     backdrops.forEach(backdrop => backdrop.remove());
     
-    // Limpa body
     document.body.classList.remove('modal-open');
     document.body.style.overflow = '';
     document.body.style.paddingRight = '';
     
-    // Inicializa aplicação
     setTimeout(() => {
         console.log('🚀 Inicializando aplicação...');
         init();
     }, 100);
     
     return true;
+}
+
+function init() {
+    console.log('🎵 Iniciando Torbware Records...');
+    console.log('User ID:', userId);
+    console.log('User Name:', userName);
+    
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    if (isMobile) {
+        document.body.classList.add('mobile-device');
+    }
+    
+    if (!player) {
+        console.error('❌ Player element not found');
+        showNotification('Erro na inicialização: player não encontrado', 'error');
+        return;
+    }
+    
+    connectWebSocket();
+    fetchLibrary();
+    setupEventListeners();
+    updatePlayerControls(true);
+    updatePlayerStatus('solo');
+    
+    // Set initial volume
+    if (volumeRange) {
+        volumeRange.value = currentVolume;
+        player.volume = currentVolume / 100;
+        updateVolumeIcon(currentVolume);
+    }
+    
+    console.log('✅ Torbware Records inicializado!');
+    showNotification('Bem-vindo ao Torbware Records!', 'success');
 }
