@@ -853,12 +853,16 @@ function updateProgress() {
 async function fetchLibrary() {
     try {
         const baseUrl = getBaseURL();
+        console.log('🌍 Fetching library from:', `${baseUrl}/library`);
+        
         const res = await fetch(`${baseUrl}/library`);
         if (!res.ok) throw new Error('Falha ao carregar biblioteca');
         
         libraryData = await res.json();
         filteredLibrary = [...libraryData];
         renderLibrary();
+        
+        console.log('✅ Biblioteca carregada:', libraryData.length, 'músicas');
         
     } catch (error) {
         console.error('Error fetching library:', error);
@@ -868,6 +872,7 @@ async function fetchLibrary() {
                 <div class="empty-state">
                     <i class="fas fa-exclamation-triangle"></i>
                     <p>Erro ao carregar biblioteca</p>
+                    <small>Verifique sua conexão</small>
                 </div>
             `;
         }
@@ -1057,6 +1062,21 @@ window.addEventListener('load', () => {
 
 function initializeModal(isMobile) {
     console.log('🚪 Inicializando modal...');
+    console.log('📱 Dispositivo móvel:', isMobile);
+    console.log('🌍 Bootstrap disponível:', typeof bootstrap !== 'undefined');
+    
+    // Força entrada alternativa em dispositivos móveis problemáticos
+    const forceFallback = isMobile && (
+        navigator.userAgent.includes('iPhone') ||
+        navigator.userAgent.includes('iPad') ||
+        navigator.userAgent.includes('Android')
+    );
+    
+    if (forceFallback) {
+        console.log('📱 Forçando entrada alternativa para dispositivo móvel');
+        setTimeout(() => showAlternativeEntry(), 500);
+        return;
+    }
     
     try {
         const modalElement = document.getElementById('nameModal');
@@ -1128,7 +1148,61 @@ function setupMobileFallback() {
     }, 10000);
 }
 
-// Name Entry Event Listeners
+// Name Entry Event Listeners - Configurar imediatamente
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('📄 DOM Content Loaded - Configurando event listeners de entrada');
+    
+    const nameInput = document.getElementById('userNameInput');
+    const joinButton = document.getElementById('joinButton');
+    const alternativeSubmitButton = document.getElementById('alternativeSubmitButton');
+    const alternativeJoinButton = document.getElementById('alternativeJoinButton');
+    const alternativeNameInput = document.getElementById('alternativeNameInput');
+    
+    if (joinButton) {
+        joinButton.addEventListener('click', () => {
+            const name = nameInput?.value.trim() || '';
+            processUserEntry(name, false);
+        });
+        console.log('✅ Event listener adicionado ao joinButton');
+    }
+
+    if (alternativeSubmitButton) {
+        alternativeSubmitButton.addEventListener('click', () => {
+            const name = alternativeNameInput?.value.trim() || '';
+            processUserEntry(name, true);
+        });
+        console.log('✅ Event listener adicionado ao alternativeSubmitButton');
+    }
+
+    if (alternativeJoinButton) {
+        alternativeJoinButton.addEventListener('click', () => {
+            showAlternativeEntry();
+        });
+        console.log('✅ Event listener adicionado ao alternativeJoinButton');
+    }
+
+    if (nameInput) {
+        nameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                joinButton?.click();
+            }
+        });
+        console.log('✅ Event listener adicionado ao nameInput');
+    }
+
+    if (alternativeNameInput) {
+        alternativeNameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                alternativeSubmitButton?.click();
+            }
+        });
+        console.log('✅ Event listener adicionado ao alternativeNameInput');
+    }
+});
+
+// Legacy event listeners (manter para compatibilidade)
 if (joinButton) {
     joinButton.addEventListener('click', () => {
         const name = nameInput.value.trim();
@@ -1217,6 +1291,7 @@ function hideAlternativeEntry() {
 
 function processUserEntry(name, isAlternative = false) {
     console.log('👤 Processando entrada:', name, 'Alternativa:', isAlternative);
+    console.log('🌍 URL Base:', getBaseURL());
     
     if (!name || name.length < 2 || name.length > 20) {
         showNotification('Nome deve ter entre 2 e 20 caracteres', 'warning');
@@ -1232,12 +1307,16 @@ function processUserEntry(name, isAlternative = false) {
     userId = crypto.randomUUID();
     
     console.log('✅ Usuário criado:', {userId, userName});
+    console.log('🌐 Host atual:', window.location.host);
+    console.log('🌐 Protocol:', window.location.protocol);
     
     hideAlternativeEntry();
     
     const modalElement = document.getElementById('nameModal');
-    modalElement.style.display = 'none';
-    modalElement.classList.remove('show');
+    if (modalElement) {
+        modalElement.style.display = 'none';
+        modalElement.classList.remove('show');
+    }
     
     const backdrops = document.querySelectorAll('.modal-backdrop');
     backdrops.forEach(backdrop => backdrop.remove());
