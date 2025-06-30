@@ -149,7 +149,11 @@ function setLoadingState(element, loading, text = '') {
         element.classList.add('loading');
         if (text) {
             const spinner = element.querySelector('.btn-text');
-            if (spinner) spinner.textContent = text;
+            if (spinner) {
+                spinner.textContent = text;
+            } else {
+                element.textContent = text;
+            }
         }
     } else {
         element.classList.remove('loading');
@@ -590,6 +594,12 @@ function playTrack(trackId) {
 // --- Event Listeners ---
 
 function setupEventListeners() {
+    // Verify essential elements exist
+    if (!player) {
+        console.error('❌ Player element not found');
+        return;
+    }
+    
     // Player events with debouncing and smart logic
     player.onplay = () => {
         console.log('🎵 Player play event - currentPartyId:', currentPartyId, 'isSyncing:', isSyncing);
@@ -691,49 +701,63 @@ function setupEventListeners() {
     };
 
     // Button events
-    createPartyBtn.onclick = () => {
-        if (!currentPartyId) {
-            setLoadingState(createPartyBtn, true, '⏳ Criando...');
-            sendMessage('create_party', {});
-            setTimeout(() => {
-                setLoadingState(createPartyBtn, false);
-                createPartyBtn.querySelector('.btn-text').textContent = '➕ Criar Festa';
-            }, 2000);
-        }
-    };
-    
-    leavePartyBtn.onclick = () => {
-        if (currentPartyId) {
-            if (confirm('Tem certeza que deseja sair da festa?')) {
-                sendMessage('leave_party', {});
-                showNotification('Saindo da festa...', 'info');
+    if (createPartyBtn) {
+        createPartyBtn.onclick = () => {
+            if (!currentPartyId) {
+                setLoadingState(createPartyBtn, true, '⏳ Criando...');
+                sendMessage('create_party', {});
+                setTimeout(() => {
+                    setLoadingState(createPartyBtn, false);
+                    // Safely update button text
+                    const btnText = createPartyBtn.querySelector('.btn-text');
+                    if (btnText) {
+                        btnText.textContent = '➕ Criar Festa';
+                    } else {
+                        createPartyBtn.textContent = '➕ Criar Festa';
+                    }
+                }, 2000);
             }
-        }
-    };
+        };
+    }
     
-    democraticModeToggle.onchange = (e) => {
-        if (isHost) {
-            sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
-            showNotification(
-                e.target.checked ? 'Modo democrático ativado!' : 'Modo host ativado!', 
-                'success'
-            );
-        }
-    };
+    if (leavePartyBtn) {
+        leavePartyBtn.onclick = () => {
+            if (currentPartyId) {
+                if (confirm('Tem certeza que deseja sair da festa?')) {
+                    sendMessage('leave_party', {});
+                    showNotification('Saindo da festa...', 'info');
+                }
+            }
+        };
+    }
+    
+    if (democraticModeToggle) {
+        democraticModeToggle.onchange = (e) => {
+            if (isHost) {
+                sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
+                showNotification(
+                    e.target.checked ? 'Modo democrático ativado!' : 'Modo host ativado!', 
+                    'success'
+                );
+            }
+        };
+    }
 
     // Upload form
-    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const fileInput = document.getElementById('audioFile');
-        const submitBtn = e.target.querySelector('button[type="submit"]');
-        
-        if (!fileInput.files.length) {
-            showNotification('Selecione um arquivo de áudio', 'warning');
-            return;
-        }
+    const uploadForm = document.getElementById('uploadForm');
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById('audioFile');
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            
+            if (!fileInput.files.length) {
+                showNotification('Selecione um arquivo de áudio', 'warning');
+                return;
+            }
 
-        const file = fileInput.files[0];
-        const maxSize = 50 * 1024 * 1024; // 50MB
+            const file = fileInput.files[0];
+            const maxSize = 50 * 1024 * 1024; // 50MB
         if (file.size > maxSize) {
             showNotification('Arquivo muito grande. Máximo: 50MB', 'error');
             return;
@@ -776,9 +800,16 @@ function setupEventListeners() {
             showNotification('Erro no upload', 'error');
         } finally {
             setLoadingState(submitBtn, false);
-            submitBtn.querySelector('.btn-text').textContent = '📤 Fazer Upload';
+            // Safely update button text
+            const btnText = submitBtn.querySelector('.btn-text');
+            if (btnText) {
+                btnText.textContent = '📤 Fazer Upload';
+            } else {
+                submitBtn.textContent = '📤 Fazer Upload';
+            }
         }
-    });
+        });
+    }
 }
 
 // --- Party Actions ---
@@ -949,6 +980,13 @@ function init() {
         document.body.classList.add('mobile-device');
     }
     
+    // Verify required elements exist
+    if (!player || !playerControls) {
+        console.error('❌ Elementos essenciais do player não encontrados!');
+        showNotification('Erro na inicialização: elementos do player não encontrados', 'error');
+        return;
+    }
+    
     connectWebSocket();
     fetchLibrary();
     setupEventListeners();
@@ -956,8 +994,12 @@ function init() {
     updatePlayerStatus('solo');
     
     // Add some helpful tooltips
-    createPartyBtn.title = 'Crie sua própria festa musical';
-    leavePartyBtn.title = 'Sair da festa atual';
+    if (createPartyBtn) {
+        createPartyBtn.title = 'Crie sua própria festa musical';
+    }
+    if (leavePartyBtn) {
+        leavePartyBtn.title = 'Sair da festa atual';
+    }
     
     console.log('✅ Torbware Records inicializado com sucesso!');
     showNotification('Bem-vindo ao Torbware Records!', 'success');
