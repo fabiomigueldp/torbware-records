@@ -111,6 +111,21 @@ const debugInfo = document.getElementById('debugInfo');
 const debugUserAgent = document.getElementById('debugUserAgent');
 const debugTimestamp = document.getElementById('debugTimestamp');
 
+// Account Management Elements
+const userDropdown = document.getElementById('userDropdown');
+const userNicknameDisplay = document.getElementById('userNicknameDisplay');
+const manageAccountBtn = document.getElementById('manageAccountBtn');
+const logoutBtn = document.getElementById('logoutBtn');
+let manageAccountModal; // Will be initialized later
+const nicknameUpdateInput = document.getElementById('nicknameUpdateInput');
+const nicknameUpdateError = document.getElementById('nicknameUpdateError');
+const updateNicknameBtn = document.getElementById('updateNicknameBtn');
+const initiateDeleteBtn = document.getElementById('initiateDeleteBtn');
+let deleteConfirmModal; // Will be initialized later
+const nicknameConfirmText = document.getElementById('nicknameConfirmText');
+const deleteNicknameConfirmInput = document.getElementById('deleteNicknameConfirmInput');
+const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+
 // --- WebSocket Communication ---
 
 function getBaseURL() {
@@ -173,6 +188,12 @@ function handleWebSocketMessage(message) {
         case 'party_sync':
             handlePartySync(message.payload);
             break;
+        case 'user_updated':
+            handleUserUpdated(message.payload);
+            break;
+        case 'user_deleted':
+            handleUserDeleted(message.payload);
+            break;
         case 'party_left':
             console.log('🚪 Party left confirmation');
             currentPartyId = null;
@@ -233,12 +254,113 @@ function handleWebSocketMessage(message) {
     }
 }
 
+function handleUserUpdated(payload) {
+    // This is handled by the state_update broadcast, but we can add a specific notification
+    if (payload.id.toString() !== userId) {
+        showNotification(`O usuário ${payload.old_nickname || ''} agora é ${payload.new_nickname}`, 'info');
+    }
+}
+
+function handleUserDeleted(payload) {
+    showNotification(`O usuário com ID ${payload.id} foi desconectado.`, 'info');
+}
+
 function sendMessage(type, payload) {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type, payload }));
     } else {
         showNotification('Sem conexão. Tentando reconectar...', 'warning');
     }
+}
+
+// --- Account Management Functions ---
+
+function openAccountModal() {
+    nicknameUpdateInput.value = userName;
+    nicknameUpdateError.style.display = 'none';
+    manageAccountModal.show();
+}
+
+async function updateNickname() {
+    const newNickname = nicknameUpdateInput.value.trim();
+    if (newNickname === userName) {
+        manageAccountModal.hide();
+        return;
+    }
+
+    if (newNickname.length < 2 || newNickname.length > 20) {
+        nicknameUpdateError.textContent = 'O apelido deve ter entre 2 e 20 caracteres.';
+        nicknameUpdateError.style.display = 'block';
+        return;
+    }
+
+    try {
+        const response = await fetch(`/users/${userId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nickname: newNickname })
+        });
+
+        if (response.ok) {
+            const updatedUser = await response.json();
+            authenticatedUser.nickname = updatedUser.nickname;
+            userName = updatedUser.nickname;
+            localStorage.setItem('authenticatedUser', JSON.stringify(authenticatedUser));
+            userNicknameDisplay.textContent = userName;
+            showNotification('Apelido atualizado com sucesso!', 'success');
+            manageAccountModal.hide();
+        } else if (response.status === 409) {
+            nicknameUpdateError.textContent = 'Este apelido já está em uso.';
+            nicknameUpdateError.style.display = 'block';
+        } else {
+            throw new Error('Failed to update nickname');
+        }
+    } catch (error) {
+        console.error('Error updating nickname:', error);
+        showNotification('Erro ao atualizar o apelido.', 'error');
+    }
+}
+
+function initiateDeleteAccount() {
+    manageAccountModal.hide();
+    nicknameConfirmText.textContent = userName;
+    deleteNicknameConfirmInput.value = '';
+    confirmDeleteBtn.disabled = true;
+    deleteConfirmModal.show();
+}
+
+async function confirmDeleteAccount() {
+    if (deleteNicknameConfirmInput.value !== userName) {
+        showNotification('O apelido digitado não corresponde.', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/users/${userId}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            showNotification('Conta deletada com sucesso. Você será desconectado.', 'success');
+            setTimeout(logout, 2000);
+        } else {
+            throw new Error('Failed to delete account');
+        }
+    } catch (error) {
+        console.error('Error deleting account:', error);
+        showNotification('Erro ao deletar a conta.', 'error');
+    }
+}
+
+function logout() {
+    if (ws) {
+        ws.close();
+    }
+    authenticatedUser = null;
+    userId = null;
+    userName = null;
+    localStorage.clear();
+    document.location.reload();
 }
 
 // --- State Handlers ---
@@ -1673,6 +1795,111 @@ function handlePrevTrack() {
     }
 }
 
+function setupEventListeners() {
+    // Account Management
+    manageAccountBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        openAccountModal();
+    });
+    logoutBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        logout();
+    });
+    updateNicknameBtn.addEventListener('click', updateNickname);
+    initiateDeleteBtn.addEventListener('click', initiateDeleteAccount);
+    deleteNicknameConfirmInput.addEventListener('input', () => {
+        confirmDeleteBtn.disabled = deleteNicknameConfirmInput.value !== userName;
+    });
+    confirmDeleteBtn.addEventListener('click', confirmDeleteAccount);
+
+    // Player
+    playPauseBtn.addEventListener('click', () => {
+        if (player.paused) {
+            player.play();
+        } else {
+            player.pause();
+        }
+    });
+    prevBtn.addEventListener('click', handlePrevTrack);
+    nextBtn.addEventListener('click', handleNextTrack);
+    player.addEventListener('timeupdate', updateProgress);
+    player.addEventListener('loadedmetadata', updateProgress);
+    progressBar.addEventListener('click', (e) => {
+        const rect = progressBar.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const width = rect.width;
+        const percentage = x / width;
+        seekToTime(player.duration * percentage);
+    });
+    volumeRange.addEventListener('input', (e) => {
+        const volume = e.target.value;
+        player.volume = volume / 100;
+        updateVolumeIcon(volume);
+    });
+
+    // Library and Playlists
+    librarySearch.addEventListener('input', (e) => filterLibrary(e.target.value));
+    document.getElementById('createPlaylistBtn').addEventListener('click', openCreatePlaylistModal);
+    document.getElementById('createPlaylistConfirmBtn').addEventListener('click', createPlaylist);
+
+    // Party
+    createPartyBtn.addEventListener('click', createParty);
+    leavePartyBtn.addEventListener('click', () => sendMessage('leave_party', {}));
+    democraticModeToggle.addEventListener('change', (e) => {
+        sendMessage('set_mode', { mode: e.target.checked ? 'democratic' : 'host' });
+    });
+    sendChatBtn.addEventListener('click', sendChatMessage);
+    chatInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            sendChatMessage();
+        }
+    });
+    document.getElementById('playPlaylistBtn').addEventListener('click', openSelectPlaylistModal);
+
+    // Upload
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData();
+        formData.append('file', audioFile.files[0]);
+        try {
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+            if (response.ok) {
+                showNotification('Upload concluído!', 'success');
+                fetchLibrary();
+            } else {
+                throw new Error('Upload failed');
+            }
+        } catch (error) {
+            showNotification('Erro no upload.', 'error');
+        }
+    });
+
+    // YouTube Import
+    document.getElementById('importUrlBtn').addEventListener('click', async () => {
+        const url = document.getElementById('youtubeUrlInput').value;
+        if (!url) return;
+        try {
+            const response = await fetch('/import_from_url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url })
+            });
+            if (response.ok) {
+                showNotification('Importação do YouTube concluída!', 'success');
+                fetchLibrary();
+            } else {
+                const error = await response.json();
+                showNotification(error.detail || 'Erro na importação.', 'error');
+            }
+        } catch (error) {
+            showNotification('Erro na importação.', 'error');
+        }
+    });
+}
+
 // --- Initialization ---
 
 window.addEventListener('load', () => {
@@ -1878,6 +2105,13 @@ document.addEventListener('DOMContentLoaded', () => {
     function initializeApp() {
         console.log('🚀 Inicializando aplicação para usuário:', authenticatedUser);
         
+        // Initialize Modals now that the DOM is ready
+        manageAccountModal = new bootstrap.Modal(document.getElementById('manageAccountModal'));
+        deleteConfirmModal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
+
+        // Update UI with user info
+        userNicknameDisplay.textContent = userName;
+
         // Conectar WebSocket
         connectWebSocket();
         

@@ -13,7 +13,7 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relacionamento com playlists
-    playlists = relationship("Playlist", back_populates="owner")
+    playlists = relationship("Playlist", back_populates="owner", cascade="all, delete-orphan")
 
 class Track(Base):
     __tablename__ = "tracks"

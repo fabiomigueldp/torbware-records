@@ -25,6 +25,9 @@ class URLImportRequest(BaseModel):
 class AuthRequest(BaseModel):
     nickname: str
 
+class NicknameUpdateRequest(BaseModel):
+    nickname: str
+
 class PlaylistCreateRequest(BaseModel):
     name: str
     owner_user_id: int  # Changed to int
@@ -816,6 +819,93 @@ def delete_playlist(playlist_id: int):
         db.delete(playlist)
         db.commit()
         return {"message": "Playlist deleted successfully"}
+    finally:
+        db.close()
+
+@app.put("/users/{user_id}")
+async def update_user_nickname(user_id: int, request: NicknameUpdateRequest):
+    """Atualiza o nickname de um usuário"""
+    db = SessionLocal()
+    try:
+        # Verifica se o novo nickname já está em uso
+        existing_user = db.query(User).filter(User.nickname == request.nickname).first()
+        if existing_user and existing_user.id != user_id:
+            raise HTTPException(status_code=409, detail="Nickname already taken")
+
+        # Encontra e atualiza o usuário
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user.nickname = request.nickname
+        db.commit()
+        db.refresh(user)
+
+        # Atualiza o estado in-memory
+        user_id_str = str(user_id)
+        if user_id_str in manager.user_names:
+            manager.user_names[user_id_str] = request.nickname
+
+        # Notifica todos os clientes sobre a mudança
+        await manager.broadcast({
+            "type": "user_updated",
+            "payload": {"id": user_id, "new_nickname": request.nickname}
+        })
+        
+        # Atualiza o nome do host se ele estiver em uma festa
+        for party in parties.values():
+            if party.host_id == user_id_str:
+                party.host_name = request.nickname
+
+        await broadcast_state_update()
+
+        return {"id": user.id, "nickname": user.nickname}
+    finally:
+        db.close()
+
+@app.delete("/users/{user_id}")
+async def delete_user(user_id: int):
+    """Deleta um usuário e todos os seus dados associados"""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_id_str = str(user_id)
+
+        # Disband any parties hosted by the user
+        parties_to_disband = [p.party_id for p in parties.values() if p.host_id == user_id_str]
+        for party_id in parties_to_disband:
+            del parties[party_id]
+
+        # Remove user from any parties they are a member of
+        for party in parties.values():
+            if user_id_str in party.members:
+                party.members.remove(user_id_str)
+                # If the party becomes empty, remove it
+                if not party.members:
+                    del parties[party.party_id]
+                else:
+                    # Notify remaining members
+                    await party.broadcast_sync(manager)
+        
+        # O cascade no modelo User cuidará da exclusão de playlists
+        db.delete(user)
+        db.commit()
+
+        # Notifica todos os clientes sobre a exclusão
+        await manager.broadcast({
+            "type": "user_deleted",
+            "payload": {"id": user_id}
+        })
+
+        # Limpa o estado in-memory
+        manager.disconnect(user_id_str)
+        
+        await broadcast_state_update()
+
+        return {"message": "User deleted successfully"}
     finally:
         db.close()
 

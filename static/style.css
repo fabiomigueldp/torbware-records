@@ -1886,3 +1886,93 @@ body.modern-layout {
     font-size: 1.1rem;
   }
 }
+
+/* User Dropdown - Enhanced Styling */
+.header-actions .dropdown {
+  position: relative;
+}
+
+.user-dropdown-btn {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 50px; /* Fully rounded */
+  padding: 4px 12px 4px 4px; /* Asymmetrical padding */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  transition: background-color var(--transition-normal);
+}
+
+.user-dropdown-btn:hover,
+.user-dropdown-btn:focus,
+.user-dropdown-btn.show {
+  background-color: var(--hover-bg);
+  border-color: var(--border-color); /* No color change on hover */
+  box-shadow: none; /* Remove bootstrap focus shadow */
+}
+
+.user-dropdown-btn .fa-user {
+  background-color: var(--primary-color);
+  color: white;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+}
+
+#userNicknameDisplay {
+  font-size: 0.9rem;
+}
+
+.dropdown-menu {
+  background-color: var(--hover-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-lg);
+  padding: 0.5rem;
+  margin-top: 8px !important;
+}
+
+.dropdown-item {
+  color: var(--text-secondary);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  transition: var(--transition-fast);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.dropdown-item i {
+  width: 16px;
+  text-align: center;
+}
+
+.dropdown-item:hover,
+.dropdown-item:focus {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.dropdown-divider {
+  border-top: 1px solid var(--border-color);
+  margin: 0.5rem 0;
+}
+
+/* Danger Zone in Modal */
+.danger-zone {
+    border: 1px solid var(--danger-color);
+    border-radius: var(--border-radius);
+    padding: 1rem;
+    background: rgba(255, 71, 87, 0.1);
+}
+
+.danger-zone h6 {
+    color: var(--danger-color);
+}

@@ -71,6 +71,17 @@
                     <div class="connection-indicator">
                         <i class="fas fa-circle"></i>
                     </div>
+                    <div class="dropdown">
+                        <button class="btn btn-secondary dropdown-toggle user-dropdown-btn" type="button" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fas fa-user"></i>
+                            <span id="userNicknameDisplay"></span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
+                            <li><a class="dropdown-item" href="#" id="manageAccountBtn">Gerenciar Conta</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#" id="logoutBtn">Sair</a></li>
+                        </ul>
+                    </div>
                 </div>
             </div>
         </div>
@@ -484,6 +495,56 @@
 <!-- Toast Container -->
 <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer">
     <!-- Toasts will be dynamically added here -->
+</div>
+
+<!-- Manage Account Modal -->
+<div class="modal fade" id="manageAccountModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content modern-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-user-cog"></i> Gerenciar Conta</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="nicknameUpdateInput" class="form-label">Apelido</label>
+                    <input type="text" class="form-control modern-input" id="nicknameUpdateInput" required maxlength="20">
+                    <div class="invalid-feedback" id="nicknameUpdateError"></div>
+                </div>
+                <div class="danger-zone mt-4">
+                    <h6><i class="fas fa-exclamation-triangle"></i> Zona de Perigo</h6>
+                    <p class="text-muted">Ações perigosas que não podem ser desfeitas.</p>
+                    <button class="btn btn-danger" id="initiateDeleteBtn">Deletar Conta</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-primary" id="updateNicknameBtn">Salvar Alterações</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Account Confirmation Modal -->
+<div class="modal fade" id="deleteConfirmModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content modern-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-trash-alt"></i> Deletar Conta Permanentemente</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Tem certeza de que deseja deletar sua conta? <strong>Esta ação é irreversível.</strong></p>
+                <p>Todas as suas playlists e dados serão permanentemente removidos.</p>
+                <p>Para confirmar, digite seu apelido "<strong id="nicknameConfirmText"></strong>" abaixo:</p>
+                <input type="text" class="form-control modern-input" id="deleteNicknameConfirmInput" placeholder="Digite seu apelido para confirmar">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn" disabled>Deletar Minha Conta</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
