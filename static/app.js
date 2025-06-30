@@ -1,5 +1,21 @@
 // --- Torbware Records - Modern UI JavaScript ---
 
+// --- Utility Functions ---
+
+function generateUUID() {
+    // Fallback para navegadores que não suportam crypto.randomUUID
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    
+    // Fallback manual para compatibilidade
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
 // --- Global State ---
 let ws;
 let userId = null;
@@ -1077,11 +1093,17 @@ async function testConnectivity() {
         const baseUrl = getBaseURL();
         console.log('🌐 Testando conectividade com:', baseUrl);
         
+        // Criar controller para timeout manual (compatibilidade)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
+        // Usar GET ao invés de HEAD para evitar erro 405
         const response = await fetch(`${baseUrl}/library`, {
-            method: 'HEAD',
-            timeout: 5000
+            method: 'GET',
+            signal: controller.signal
         });
         
+        clearTimeout(timeoutId);
         console.log('🌐 Resposta do servidor:', response.status);
         return response.ok;
     } catch (error) {
@@ -1334,7 +1356,7 @@ function processUserEntry(name, isAlternative = false) {
     }
     
     userName = name;
-    userId = crypto.randomUUID();
+    userId = generateUUID();
     
     console.log('✅ Usuário criado:', {userId, userName});
     console.log('🌐 Host atual:', window.location.host);
