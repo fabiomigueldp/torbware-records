@@ -137,7 +137,27 @@ function handleWebSocketMessage(message) {
             break;
         case 'party_left':
             console.log('🚪 Party left confirmation');
-            forceLeaveParty();
+            currentPartyId = null;
+            currentPartyMode = 'host';
+            isHost = false;
+            
+            // Clear sync interval
+            if (hostSyncInterval) {
+                clearInterval(hostSyncInterval);
+                hostSyncInterval = null;
+            }
+            
+            // Update UI immediately
+            if (partiesView) partiesView.style.display = 'block';
+            if (partyView) partyView.style.display = 'none';
+            
+            // Reset player controls
+            updatePlayerControls(true);
+            updatePlayerStatus('solo');
+            
+            // Refresh parties list
+            sendMessage('get_parties', {});
+            
             showNotification('Você saiu da festa com sucesso', 'success');
             break;
         case 'party_joined':
@@ -150,6 +170,12 @@ function handleWebSocketMessage(message) {
             break;
         case 'chat_message':
             handleChatMessage(message.payload);
+            break;
+        case 'queue_update':
+            console.log('🎵 Queue update received:', message.payload);
+            if (message.payload && message.payload.queue) {
+                renderQueue(message.payload.queue);
+            }
             break;
         case 'action_rejected':
             console.log('🚫 Ação rejeitada:', message.payload);
@@ -490,11 +516,63 @@ function renderCurrentParty(party) {
 }
 
 function updateNowPlaying(party) {
-    const trackTitle = party.current_track_title || 'Nenhuma música tocando';
-    const trackArtist = party.current_track_title ? 'ID: ' + party.track_id : 'Selecione uma música da biblioteca';
+    console.log('🎵 Updating now playing:', party);
+    
+    let trackTitle = 'Nenhuma música tocando';
+    let trackArtist = 'Selecione uma música da biblioteca';
+    
+    if (party.track_id) {
+        // First try to get title from party data
+        if (party.current_track_title) {
+            trackTitle = party.current_track_title;
+            trackArtist = `ID: ${party.track_id}`;
+        } else {
+            // Try to find track in local library
+            const track = libraryData.find(t => t.id === party.track_id);
+            if (track) {
+                trackTitle = track.title;
+                trackArtist = track.filename ? `Arquivo: ${track.filename}` : `ID: ${party.track_id}`;
+            } else {
+                trackTitle = `Música ID: ${party.track_id}`;
+                trackArtist = 'Carregando informações...';
+                
+                // Try to fetch track info from server
+                fetchTrackInfo(party.track_id);
+            }
+        }
+    }
+    
+    console.log('🎵 Setting track info:', { trackTitle, trackArtist });
     
     if (currentTrackTitle) currentTrackTitle.textContent = trackTitle;
     if (currentTrackArtist) currentTrackArtist.textContent = trackArtist;
+}
+
+async function fetchTrackInfo(trackId) {
+    try {
+        const response = await fetch(new URL(`/track/${trackId}`, window.API_BASE_URL));
+        if (response.ok) {
+            const trackData = await response.json();
+            
+            // Update library data
+            const existingIndex = libraryData.findIndex(t => t.id === trackId);
+            if (existingIndex >= 0) {
+                libraryData[existingIndex] = trackData;
+            } else {
+                libraryData.push(trackData);
+            }
+            
+            // Update display if this is still the current track
+            if (currentPartyId && currentTrackTitle && currentTrackArtist) {
+                if (currentTrackTitle.textContent.includes(`ID: ${trackId}`)) {
+                    currentTrackTitle.textContent = trackData.title;
+                    currentTrackArtist.textContent = trackData.filename ? `Arquivo: ${trackData.filename}` : `ID: ${trackId}`;
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error fetching track info:', error);
+    }
 }
 
 function renderPartyMembers(members, hostId) {
@@ -522,7 +600,13 @@ function renderPartyMembers(members, hostId) {
 function updatePlayerControls(enabled) {
     const canControl = enabled || !currentPartyId;
     
-    console.log('🎮 Atualizando controles:', { enabled, currentPartyId, canControl });
+    console.log('🎮 Atualizando controles:', { 
+        enabled, 
+        currentPartyId, 
+        canControl,
+        isHost,
+        currentPartyMode 
+    });
     
     if (canControl) {
         playerControls.classList.remove('disabled');
@@ -530,7 +614,10 @@ function updatePlayerControls(enabled) {
         if (playPauseBtn) playPauseBtn.disabled = false;
         if (prevBtn) prevBtn.disabled = false;
         if (nextBtn) nextBtn.disabled = false;
-        if (progressBar) progressBar.style.pointerEvents = 'auto';
+        if (progressBar) {
+            progressBar.style.pointerEvents = 'auto';
+            progressBar.style.cursor = 'pointer';
+        }
         if (volumeRange) volumeRange.disabled = false;
         
         console.log('✅ Controles habilitados');
@@ -540,7 +627,10 @@ function updatePlayerControls(enabled) {
         if (playPauseBtn) playPauseBtn.disabled = true;
         if (prevBtn) prevBtn.disabled = true;
         if (nextBtn) nextBtn.disabled = true;
-        if (progressBar) progressBar.style.pointerEvents = 'none';
+        if (progressBar) {
+            progressBar.style.pointerEvents = 'none';
+            progressBar.style.cursor = 'not-allowed';
+        }
         if (volumeRange) volumeRange.disabled = true;
         
         console.log('🚫 Controles desabilitados');
@@ -574,29 +664,76 @@ function updatePlayerStatus(mode) {
     }
 }
 
-// --- Player Functions ---
+// --- Track Management Functions ---
+
+let currentTrackId = null;
+let currentTrackData = null;
 
 function getCurrentTrackId() {
-    if (!player.src) return null;
-    const match = player.src.match(/\/stream\/(\d+)/);
-    return match ? parseInt(match[1]) : null;
+    return currentTrackId;
 }
 
-function loadTrack(trackId) {
-    if (!trackId) return;
+function getCurrentTrackData() {
+    return currentTrackData;
+}
+
+async function loadTrack(trackId) {
+    if (!trackId) {
+        console.log('❌ Track ID is null/undefined');
+        return;
+    }
     
-    const newSrc = new URL(`/stream/${trackId}`, window.API_BASE_URL).href;
-    player.src = newSrc;
-    player.load();
+    console.log('🎵 Loading track:', trackId);
     
-    // Update track info
-    const track = libraryData.find(t => t.id === trackId);
-    if (track) {
-        if (playerTrackTitle) playerTrackTitle.textContent = track.title;
-        if (currentTrackTitle) currentTrackTitle.textContent = track.title;
-        if (currentTrackArtist) currentTrackArtist.textContent = `ID: ${track.id}`;
+    try {
+        // Find track in library data
+        const track = libraryData.find(t => t.id === trackId);
+        if (!track) {
+            console.error('❌ Track not found in library:', trackId);
+            showNotification('Música não encontrada na biblioteca', 'error');
+            return;
+        }
+        
+        currentTrackId = trackId;
+        currentTrackData = track;
+        
+        // Update player source
+        const streamUrl = new URL(`/stream/${trackId}`, window.API_BASE_URL);
+        console.log('🎵 Setting player source:', streamUrl.toString());
+        
+        player.src = streamUrl.toString();
+        
+        // Update UI elements
+        updateTrackDisplay(track);
+        
+        // Update now playing in party view if in party
+        if (currentPartyId && currentTrackTitle && currentTrackArtist) {
+            currentTrackTitle.textContent = track.title;
+            currentTrackArtist.textContent = `Arquivo: ${track.filename || 'Unknown'}`;
+        }
+        
+        console.log('✅ Track loaded successfully:', track.title);
+        
+    } catch (error) {
+        console.error('❌ Error loading track:', error);
+        showNotification('Erro ao carregar música', 'error');
     }
 }
+
+function updateTrackDisplay(track) {
+    // Update player bar
+    if (playerTrackTitle) {
+        playerTrackTitle.textContent = track.title;
+    }
+    
+    // Update status based on party mode
+    updatePlayerStatus(currentPartyId ? 
+        (isHost ? 'host' : (currentPartyMode === 'democratic' ? 'democratic' : 'member')) : 
+        'solo'
+    );
+}
+
+// --- Player Functions ---
 
 function playTrack(trackId) {
     if (currentPartyId) {
@@ -626,15 +763,22 @@ function formatTime(seconds) {
 }
 
 function seekToTime(time) {
-    if (!player || !player.duration) return;
+    if (!player || !player.duration) {
+        console.log('🚫 Seek blocked: player or duration not available');
+        return;
+    }
     
     const clampedTime = Math.max(0, Math.min(player.duration, time));
     console.log(`🎯 Seeking to time: ${formatTime(clampedTime)}`);
     
     if (currentPartyId) {
         const canControl = isHost || currentPartyMode === 'democratic';
+        console.log('🎮 Seek control check:', { isHost, currentPartyMode, canControl });
+        
         if (canControl) {
             lastPlayerAction = Date.now();
+            
+            // Apply seek immediately for better UX
             player.currentTime = clampedTime;
             
             // Send seek action to server
@@ -645,14 +789,18 @@ function seekToTime(time) {
             
             // Show better feedback based on party mode
             const modeText = isHost ? 'host' : 'modo democrático';
-            showNotification(`Alterando posição (${modeText})...`, 'info');
+            showNotification(`Posição alterada (${modeText})`, 'success');
+            
+            console.log(`✅ Seek executed: ${formatTime(clampedTime)} (${modeText})`);
         } else {
             showNotification('Apenas o host ou membros em modo democrático podem controlar o player', 'warning');
+            console.log('🚫 Seek blocked: insufficient permissions');
         }
     } else {
         // Solo mode - direct seek with immediate feedback
         player.currentTime = clampedTime;
         showNotification(`Posição alterada para ${formatTime(clampedTime)}`, 'success');
+        console.log(`✅ Solo seek executed: ${formatTime(clampedTime)}`);
     }
 }
 
@@ -771,10 +919,299 @@ function addToQueue(trackId) {
         return;
     }
     
-    // For now, just play the track directly
-    // In a full implementation, you'd send a queue message to the server
-    playTrack(trackId);
-    showNotification('Música adicionada à reprodução', 'success');
+    const track = libraryData.find(t => t.id === trackId);
+    if (!track) {
+        showNotification('Música não encontrada', 'error');
+        return;
+    }
+    
+    // Send add to queue message to server
+    sendMessage('queue_action', { 
+        action: 'add', 
+        track_id: trackId,
+        party_id: currentPartyId 
+    });
+    
+    showNotification(`"${track.title}" adicionada à fila`, 'success');
+}
+
+function renderQueue(queue) {
+    if (!queueList) return;
+    
+    queueList.innerHTML = '';
+    
+    if (!queue || queue.length === 0) {
+        queueList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-list-ul"></i>
+                <p>A fila está vazia</p>
+                <small>Adicione músicas da biblioteca</small>
+            </div>
+        `;
+        return;
+    }
+    
+    queue.forEach((queueItem, index) => {
+        const track = libraryData.find(t => t.id === queueItem.track_id) || 
+                     { id: queueItem.track_id, title: queueItem.title || `Track ${queueItem.track_id}` };
+        
+        const queueItemElement = document.createElement('div');
+        queueItemElement.className = 'queue-item';
+        queueItemElement.innerHTML = `
+            <div class="queue-item-position">${index + 1}</div>
+            <div class="queue-item-info">
+                <div class="queue-item-title">${track.title}</div>
+                <div class="queue-item-added-by">Adicionado por: ${queueItem.added_by || 'Desconhecido'}</div>
+            </div>
+            <div class="queue-item-actions">
+                <button class="btn btn-sm btn-outline-danger remove-queue-btn" 
+                        onclick="removeFromQueue(${index})" 
+                        title="Remover da fila">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        `;
+        queueList.appendChild(queueItemElement);
+    });
+}
+
+function removeFromQueue(position) {
+    if (!currentPartyId) return;
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    if (!canControl) {
+        showNotification('Você não pode remover músicas da fila neste modo', 'warning');
+        return;
+    }
+    
+    sendMessage('queue_action', { 
+        action: 'remove', 
+        position: position,
+        party_id: currentPartyId 
+    });
+}
+
+function clearQueue() {
+    if (!currentPartyId) return;
+    
+    const canControl = isHost || currentPartyMode === 'democratic';
+    if (!canControl) {
+        showNotification('Você não pode limpar a fila neste modo', 'warning');
+        return;
+    }
+    
+    if (confirm('Tem certeza que deseja limpar toda a fila?')) {
+        sendMessage('queue_action', { 
+            action: 'clear',
+            party_id: currentPartyId 
+        });
+    }
+}
+
+// --- Initialization ---
+
+window.addEventListener('load', () => {
+    console.log('🌐 Window loaded');
+    console.log('📱 User Agent:', navigator.userAgent);
+    
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    console.log('📱 Is Mobile:', isMobile);
+    
+    if (isMobile) {
+        document.body.classList.add('mobile-device');
+    }
+    
+    if (isMobile && debugInfo) {
+        debugInfo.style.display = 'block';
+        if (debugUserAgent) debugUserAgent.textContent = navigator.userAgent.substring(0, 50) + '...';
+        if (debugTimestamp) debugTimestamp.textContent = new Date().toISOString();
+    }
+    
+    initializeNameEntry(isMobile);
+});
+
+function initializeNameEntry(isMobile) {
+    console.log('🚪 Inicializando entrada de nome...');
+    
+    setTimeout(() => {
+        try {
+            console.log('🚪 Tentando exibir modal...');
+            nameModal.show();
+            console.log('✅ Modal exibido com sucesso');
+            
+            if (isMobile) {
+                setupMobileFallback();
+            }
+            
+        } catch (error) {
+            console.error('❌ Erro ao exibir modal:', error);
+            showAlternativeEntry();
+        }
+    }, 200);
+}
+
+function setupMobileFallback() {
+    setTimeout(() => {
+        const modalElement = document.getElementById('nameModal');
+        const isModalVisible = modalElement.classList.contains('show');
+        
+        if (isModalVisible && !userName && alternativeJoinButton) {
+            alternativeJoinButton.classList.remove('d-none');
+        }
+    }, 5000);
+    
+    setTimeout(() => {
+        const modalElement = document.getElementById('nameModal');
+        const isModalVisible = modalElement.classList.contains('show');
+        
+        if (isModalVisible && !userName) {
+            showNotification('Problemas com o modal? Use a entrada alternativa.', 'info');
+            if (alternativeJoinButton) {
+                alternativeJoinButton.classList.remove('d-none');
+            }
+        }
+    }, 10000);
+}
+
+// Name Entry Event Listeners
+if (joinButton) {
+    joinButton.addEventListener('click', () => {
+        const name = nameInput.value.trim();
+        processUserEntry(name, false);
+    });
+}
+
+if (alternativeSubmitButton) {
+    alternativeSubmitButton.addEventListener('click', () => {
+        const name = alternativeNameInput.value.trim();
+        processUserEntry(name, true);
+    });
+}
+
+if (alternativeJoinButton) {
+    alternativeJoinButton.addEventListener('click', () => {
+        showAlternativeEntry();
+    });
+}
+
+if (nameInput) {
+    nameInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            joinButton.click();
+        }
+    });
+}
+
+if (alternativeNameInput) {
+    alternativeNameInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            alternativeSubmitButton.click();
+        }
+    });
+}
+
+function showAlternativeEntry() {
+    console.log('🔧 Mostrando entrada alternativa');
+    
+    const modalElement = document.getElementById('nameModal');
+    modalElement.style.display = 'none';
+    modalElement.classList.remove('show');
+    
+    const backdrops = document.querySelectorAll('.modal-backdrop');
+    backdrops.forEach(backdrop => backdrop.remove());
+    
+    document.body.classList.remove('modal-open');
+    document.body.style.overflow = '';
+    document.body.style.paddingRight = '';
+    
+    alternativeEntry.classList.remove('d-none');
+    alternativeEntry.classList.add('show');
+    alternativeEntry.style.display = 'flex';
+    
+    setTimeout(() => {
+        if (alternativeNameInput) alternativeNameInput.focus();
+    }, 100);
+}
+
+function hideAlternativeEntry() {
+    document.body.classList.remove('alternative-active');
+    alternativeEntry.style.display = 'none';
+    alternativeEntry.classList.remove('show');
+    alternativeEntry.classList.add('d-none');
+}
+
+function processUserEntry(name, isAlternative = false) {
+    console.log('👤 Processando entrada:', name, 'Alternativa:', isAlternative);
+    
+    if (!name || name.length < 2 || name.length > 20) {
+        showNotification('Nome deve ter entre 2 e 20 caracteres', 'warning');
+        return false;
+    }
+    
+    if (userName && userId) {
+        console.log('⚠️ Usuário já existe');
+        return false;
+    }
+    
+    userName = name;
+    userId = crypto.randomUUID();
+    
+    console.log('✅ Usuário criado:', {userId, userName});
+    
+    hideAlternativeEntry();
+    
+    const modalElement = document.getElementById('nameModal');
+    modalElement.style.display = 'none';
+    modalElement.classList.remove('show');
+    
+    const backdrops = document.querySelectorAll('.modal-backdrop');
+    backdrops.forEach(backdrop => backdrop.remove());
+    
+    document.body.classList.remove('modal-open');
+    document.body.style.overflow = '';
+    document.body.style.paddingRight = '';
+    
+    setTimeout(() => {
+        console.log('🚀 Inicializando aplicação...');
+        init();
+    }, 100);
+    
+    return true;
+}
+
+function init() {
+    console.log('🎵 Iniciando Torbware Records...');
+    console.log('User ID:', userId);
+    console.log('User Name:', userName);
+    
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    if (isMobile) {
+        document.body.classList.add('mobile-device');
+    }
+    
+    if (!player) {
+        console.error('❌ Player element not found');
+        showNotification('Erro na inicialização: player não encontrado', 'error');
+        return;
+    }
+    
+    connectWebSocket();
+    fetchLibrary();
+    setupEventListeners();
+    updatePlayerControls(true);
+    updatePlayerStatus('solo');
+    
+    // Set initial volume
+    if (volumeRange) {
+        volumeRange.value = currentVolume;
+        player.volume = currentVolume / 100;
+        updateVolumeIcon(currentVolume);
+    }
+    
+    console.log('✅ Torbware Records inicializado!');
+    showNotification('Bem-vindo ao Torbware Records!', 'success');
 }
 
 // --- Party Functions ---
@@ -798,6 +1235,34 @@ function sendChatMessage() {
     });
     
     chatInput.value = '';
+}
+
+// Force leave party when WebSocket doesn't respond
+function forceLeaveParty() {
+    console.log('🚪 Forçando saída da festa...');
+    
+    currentPartyId = null;
+    currentPartyMode = 'host';
+    isHost = false;
+    
+    // Update UI to show no party
+    if (partiesView) partiesView.style.display = 'block';
+    if (partyView) partyView.style.display = 'none';
+    
+    // Reset player controls
+    updatePlayerControls(true);
+    updatePlayerStatus('solo');
+    
+    // Clear sync interval
+    if (hostSyncInterval) {
+        clearInterval(hostSyncInterval);
+        hostSyncInterval = null;
+    }
+    
+    // Update party list to refresh state
+    sendMessage('get_parties', {});
+    
+    showNotification('Você saiu da festa', 'success');
 }
 
 // --- Event Listeners ---
@@ -917,7 +1382,10 @@ function setupEventListeners() {
         
         // Handle click to seek anywhere on the progress bar
         progressBar.addEventListener('click', (e) => {
-            if (!player.duration || isDragging) return;
+            if (!player.duration || isDragging) {
+                console.log('🚫 Click seek blocked:', { duration: player.duration, isDragging });
+                return;
+            }
             
             e.preventDefault();
             e.stopPropagation();
@@ -927,6 +1395,7 @@ function setupEventListeners() {
             const newTime = percentage * player.duration;
             
             console.log(`🎯 Click seek: ${formatTime(newTime)} (${(percentage * 100).toFixed(1)}%)`);
+            console.log('🎯 Current party state:', { currentPartyId, isHost, currentPartyMode });
             
             // Add loading state to button
             const container = progressBar.closest('.progress-bar-container');
@@ -1157,23 +1626,28 @@ function setupEventListeners() {
                 if (confirm('Tem certeza que deseja sair da festa?')) {
                     console.log('🚪 User confirmed leaving party');
                     
-                    // Send leave message
+                    // Send leave message with party ID
                     sendMessage('leave_party', { party_id: currentPartyId });
                     showNotification('Saindo da festa...', 'info');
                     
                     // Force UI update in case WebSocket response is delayed
                     setTimeout(() => {
                         if (currentPartyId) {
-                            console.log('🚪 Forçando saída da festa na UI');
+                            console.log('🚪 Forçando saída da festa na UI devido a timeout');
                             forceLeaveParty();
                         }
-                    }, 3000);
+                    }, 5000); // Increased timeout to 5 seconds
                     
-                    // Disable button temporarily
+                    // Disable button temporarily with loading state
                     leavePartyBtn.disabled = true;
+                    leavePartyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saindo...';
+                    
                     setTimeout(() => {
-                        if (leavePartyBtn) leavePartyBtn.disabled = false;
-                    }, 2000);
+                        if (leavePartyBtn && leavePartyBtn.disabled) {
+                            leavePartyBtn.disabled = false;
+                            leavePartyBtn.innerHTML = '<i class="fas fa-sign-out-alt"></i> Sair';
+                        }
+                    }, 3000);
                 } else {
                     console.log('🚪 User cancelled leaving party');
                 }
@@ -1265,6 +1739,12 @@ function setupEventListeners() {
             }
         });
     }
+
+    // Queue Controls
+    const clearQueueBtn = document.querySelector('.clear-queue-btn');
+    if (clearQueueBtn) {
+        clearQueueBtn.addEventListener('click', clearQueue);
+    }
 }
 
 function updateVolumeIcon(volume) {
@@ -1277,211 +1757,4 @@ function updateVolumeIcon(volume) {
     } else {
         volumeIcon.className = 'fas fa-volume-up';
     }
-}
-
-// --- Initialization ---
-
-window.addEventListener('load', () => {
-    console.log('🌐 Window loaded');
-    console.log('📱 User Agent:', navigator.userAgent);
-    
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    console.log('📱 Is Mobile:', isMobile);
-    
-    if (isMobile) {
-        document.body.classList.add('mobile-device');
-    }
-    
-    if (isMobile && debugInfo) {
-        debugInfo.style.display = 'block';
-        if (debugUserAgent) debugUserAgent.textContent = navigator.userAgent.substring(0, 50) + '...';
-        if (debugTimestamp) debugTimestamp.textContent = new Date().toISOString();
-    }
-    
-    initializeNameEntry(isMobile);
-});
-
-function initializeNameEntry(isMobile) {
-    console.log('🚪 Inicializando entrada de nome...');
-    
-    setTimeout(() => {
-        try {
-            console.log('🚪 Tentando exibir modal...');
-            nameModal.show();
-            console.log('✅ Modal exibido com sucesso');
-            
-            if (isMobile) {
-                setupMobileFallback();
-            }
-            
-        } catch (error) {
-            console.error('❌ Erro ao exibir modal:', error);
-            showAlternativeEntry();
-        }
-    }, 200);
-}
-
-function setupMobileFallback() {
-    setTimeout(() => {
-        const modalElement = document.getElementById('nameModal');
-        const isModalVisible = modalElement.classList.contains('show');
-        
-        if (isModalVisible && !userName && alternativeJoinButton) {
-            alternativeJoinButton.classList.remove('d-none');
-        }
-    }, 5000);
-    
-    setTimeout(() => {
-        const modalElement = document.getElementById('nameModal');
-        const isModalVisible = modalElement.classList.contains('show');
-        
-        if (isModalVisible && !userName) {
-            showNotification('Problemas com o modal? Use a entrada alternativa.', 'info');
-            if (alternativeJoinButton) {
-                alternativeJoinButton.classList.remove('d-none');
-            }
-        }
-    }, 10000);
-}
-
-// Name Entry Event Listeners
-if (joinButton) {
-    joinButton.addEventListener('click', () => {
-        const name = nameInput.value.trim();
-        processUserEntry(name, false);
-    });
-}
-
-if (alternativeSubmitButton) {
-    alternativeSubmitButton.addEventListener('click', () => {
-        const name = alternativeNameInput.value.trim();
-        processUserEntry(name, true);
-    });
-}
-
-if (alternativeJoinButton) {
-    alternativeJoinButton.addEventListener('click', () => {
-        showAlternativeEntry();
-    });
-}
-
-if (nameInput) {
-    nameInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            joinButton.click();
-        }
-    });
-}
-
-if (alternativeNameInput) {
-    alternativeNameInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            alternativeSubmitButton.click();
-        }
-    });
-}
-
-function showAlternativeEntry() {
-    console.log('🔧 Mostrando entrada alternativa');
-    
-    const modalElement = document.getElementById('nameModal');
-    modalElement.style.display = 'none';
-    modalElement.classList.remove('show');
-    
-    const backdrops = document.querySelectorAll('.modal-backdrop');
-    backdrops.forEach(backdrop => backdrop.remove());
-    
-    document.body.classList.remove('modal-open');
-    document.body.classList.add('alternative-active');
-    document.body.style.overflow = '';
-    document.body.style.paddingRight = '';
-    
-    alternativeEntry.classList.remove('d-none');
-    alternativeEntry.classList.add('show');
-    alternativeEntry.style.display = 'flex';
-    
-    setTimeout(() => {
-        if (alternativeNameInput) alternativeNameInput.focus();
-    }, 100);
-}
-
-function hideAlternativeEntry() {
-    document.body.classList.remove('alternative-active');
-    alternativeEntry.style.display = 'none';
-    alternativeEntry.classList.remove('show');
-    alternativeEntry.classList.add('d-none');
-}
-
-function processUserEntry(name, isAlternative = false) {
-    console.log('👤 Processando entrada:', name, 'Alternativa:', isAlternative);
-    
-    if (!name || name.length < 2 || name.length > 20) {
-        showNotification('Nome deve ter entre 2 e 20 caracteres', 'warning');
-        return false;
-    }
-    
-    if (userName && userId) {
-        console.log('⚠️ Usuário já existe');
-        return false;
-    }
-    
-    userName = name;
-    userId = crypto.randomUUID();
-    
-    console.log('✅ Usuário criado:', {userId, userName});
-    
-    hideAlternativeEntry();
-    
-    const modalElement = document.getElementById('nameModal');
-    modalElement.style.display = 'none';
-    modalElement.classList.remove('show');
-    
-    const backdrops = document.querySelectorAll('.modal-backdrop');
-    backdrops.forEach(backdrop => backdrop.remove());
-    
-    document.body.classList.remove('modal-open');
-    document.body.style.overflow = '';
-    document.body.style.paddingRight = '';
-    
-    setTimeout(() => {
-        console.log('🚀 Inicializando aplicação...');
-        init();
-    }, 100);
-    
-    return true;
-}
-
-function init() {
-    console.log('🎵 Iniciando Torbware Records...');
-    console.log('User ID:', userId);
-    console.log('User Name:', userName);
-    
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    if (isMobile) {
-        document.body.classList.add('mobile-device');
-    }
-    
-    if (!player) {
-        console.error('❌ Player element not found');
-        showNotification('Erro na inicialização: player não encontrado', 'error');
-        return;
-    }
-    
-    connectWebSocket();
-    fetchLibrary();
-    setupEventListeners();
-    updatePlayerControls(true);
-    updatePlayerStatus('solo');
-    
-    // Set initial volume
-    if (volumeRange) {
-        volumeRange.value = currentVolume;
-        player.volume = currentVolume / 100;
-        updateVolumeIcon(currentVolume);
-    }
-    
-    console.log('✅ Torbware Records inicializado!');
-    showNotification('Bem-vindo ao Torbware Records!', 'success');
 }
