@@ -268,7 +268,19 @@ function handlePartySync(party) {
             }
         } else {
             console.log('👥 HOST MODE: Você é membro');
-            applySyncUpdate(party, false);
+            // Check if we have a recent action to avoid conflict with sync
+            const hasRecentAction = (Date.now() - lastPlayerAction) < 2000; // 2 second protection
+            
+            if (hasRecentAction) {
+                console.log('👥 HOST MODE: Ignorando sync - ação recente do usuário');
+                
+                if (party.track_id && party.track_id !== getCurrentTrackId()) {
+                    console.log('🎵 Host membro: Mudando música');
+                    loadTrack(party.track_id);
+                }
+            } else {
+                applySyncUpdate(party, false);
+            }
             
             if (hostSyncInterval) {
                 clearInterval(hostSyncInterval);
@@ -315,9 +327,19 @@ function applySyncUpdate(party, gentle = false) {
         const timeTolerance = gentle ? 4.0 : 1.5;
         const timeDifference = Math.abs(player.currentTime - party.currentTime);
         
-        if (party.track_id && timeDifference > timeTolerance) {
-            console.log(`⏰ Ajustando tempo: ${timeDifference.toFixed(2)}s`);
-            player.currentTime = party.currentTime;
+        // Additional protection: if there was a recent player action, be more conservative
+        const hasVeryRecentAction = (Date.now() - lastPlayerAction) < 1000; // 1 second protection
+        const effectiveTolerance = hasVeryRecentAction ? timeTolerance * 2 : timeTolerance;
+        
+        if (party.track_id && timeDifference > effectiveTolerance) {
+            console.log(`⏰ Ajustando tempo: ${timeDifference.toFixed(2)}s (tolerância: ${effectiveTolerance.toFixed(1)}s)`);
+            
+            // Additional check: if this is a very recent action and the time difference is small, skip it
+            if (hasVeryRecentAction && timeDifference < 5.0) {
+                console.log(`⏰ Pulando ajuste de tempo - ação muito recente (${timeDifference.toFixed(2)}s)`);
+            } else {
+                player.currentTime = party.currentTime;
+            }
         }
 
         if (party.is_playing && player.paused) {
@@ -809,16 +831,19 @@ function seekToTime(time) {
         console.log('🎮 Seek control check:', { isHost, currentPartyMode, canControl });
         
         if (canControl) {
+            // Mark the action timestamp BEFORE applying the seek
             lastPlayerAction = Date.now();
             
             // Apply seek immediately for better UX
             player.currentTime = clampedTime;
             
-            // Send seek action to server
-            sendMessage('player_action', { 
-                action: 'seek', 
-                currentTime: clampedTime 
-            });
+            // Send seek action to server after a small delay to ensure local change is applied
+            setTimeout(() => {
+                sendMessage('player_action', { 
+                    action: 'seek', 
+                    currentTime: clampedTime 
+                });
+            }, 50);
             
             // Show better feedback based on party mode
             const modeText = isHost ? 'host' : 'modo democrático';
@@ -831,6 +856,7 @@ function seekToTime(time) {
         }
     } else {
         // Solo mode - direct seek with immediate feedback
+        lastPlayerAction = Date.now();
         player.currentTime = clampedTime;
         showNotification(`Posição alterada para ${formatTime(clampedTime)}`, 'success');
         console.log(`✅ Solo seek executed: ${formatTime(clampedTime)}`);
@@ -1403,7 +1429,7 @@ function init() {
     
     connectWebSocket();
     fetchLibrary();
-    setupEventListeners();
+    // Remover setupEventListeners() daqui - já foi chamado no window.load
     updatePlayerControls(true);
     updatePlayerStatus('solo');
     
@@ -1471,7 +1497,17 @@ function forceLeaveParty() {
 
 // --- Event Listeners ---
 
+let eventListenersSetup = false; // Flag para evitar múltiplas inicializações
+
 function setupEventListeners() {
+    // Prevenir múltiplas inicializações
+    if (eventListenersSetup) {
+        console.log('⚠️ Event listeners já configurados, pulando...');
+        return;
+    }
+    
+    console.log('🎮 Configurando event listeners...');
+    
     // Player Events
     if (player) {
         player.addEventListener('play', () => {
@@ -1950,6 +1986,10 @@ function setupEventListeners() {
     if (clearQueueBtn) {
         clearQueueBtn.addEventListener('click', clearQueue);
     }
+    
+    // Marcar como configurado para evitar múltiplas inicializações
+    eventListenersSetup = true;
+    console.log('✅ Event listeners configurados com sucesso!');
 }
 
 function updateVolumeIcon(volume) {
