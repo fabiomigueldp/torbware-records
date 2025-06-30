@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.templating import Jinja2Templates
 from pydantic import BaseModel, HttpUrl
 
-from app.database import SessionLocal, Track, Playlist, PlaylistTrack, init_db
+from app.database import SessionLocal, Track, Playlist, PlaylistTrack, User, init_db
 from app.convert import convert_to_aac
 from app.importer import import_from_youtube
 
@@ -22,9 +22,12 @@ from app.importer import import_from_youtube
 class URLImportRequest(BaseModel):
     url: HttpUrl
 
+class AuthRequest(BaseModel):
+    nickname: str
+
 class PlaylistCreateRequest(BaseModel):
     name: str
-    owner_user_id: str
+    owner_user_id: int  # Changed to int
 
 class PlaylistAddTrackRequest(BaseModel):
     track_id: int
@@ -554,6 +557,41 @@ async def startup_event():
 def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+@app.post("/auth/login")
+def login_user(request: AuthRequest):
+    """
+    Endpoint de autenticação por nickname. 
+    Cria um novo usuário se não existir, ou retorna o existente.
+    """
+    db = SessionLocal()
+    try:
+        # Busca usuário existente
+        user = db.query(User).filter(User.nickname == request.nickname).first()
+        
+        if user:
+            # Usuário já existe
+            return {
+                "id": user.id,
+                "nickname": user.nickname,
+                "status": "existing_user"
+            }
+        else:
+            # Cria novo usuário
+            new_user = User(nickname=request.nickname)
+            db.add(new_user)
+            db.commit()
+            db.refresh(new_user)
+            return {
+                "id": new_user.id,
+                "nickname": new_user.nickname,
+                "status": "new_user"
+            }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Erro na autenticação: {str(e)}")
+    finally:
+        db.close()
+
 @app.post("/upload")
 async def upload_audio(file: UploadFile = File(...)):
     temp_path = os.path.join(MEDIA_DIR, file.filename)
@@ -615,7 +653,7 @@ def create_playlist(request: PlaylistCreateRequest):
         db.close()
 
 @app.get("/users/{user_id}/playlists")
-def get_user_playlists(user_id: str):
+def get_user_playlists(user_id: int):
     """Busca todas as playlists de um usuário"""
     db = SessionLocal()
     try:

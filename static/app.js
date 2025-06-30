@@ -1,5 +1,9 @@
 // --- Torbware Records - Modern UI JavaScript ---
 
+// --- Authentication Variables ---
+let authenticatedUser = null; // {id: number, nickname: string}
+let authToken = null; // Para futuras implementações de token
+
 // --- Utility Functions ---
 
 function generateUUID() {
@@ -329,7 +333,7 @@ function handlePartySync(party) {
     } else if (party.mode === 'democratic') {
         console.log('🗳️ DEMOCRATIC MODE: Aplicando sync democrático');
         
-        // Em modo democrático, todos sincronizam, mas com proteção para ações recentes
+        // Em modo democrático, todos sincronam, mas com proteção para ações recentes
         const timeSinceAction = Date.now() - lastPlayerAction;
         const hasRecentAction = timeSinceAction < 2000;
         
@@ -1286,6 +1290,11 @@ async function createPlaylist() {
         return;
     }
     
+    if (!authenticatedUser) {
+        showNotification('Você precisa estar autenticado para criar playlists', 'error');
+        return;
+    }
+    
     nameInput.classList.remove('is-invalid');
     
     try {
@@ -1294,7 +1303,7 @@ async function createPlaylist() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 name: name,
-                owner_user_id: userId 
+                owner_user_id: authenticatedUser.id  // Usar ID inteiro do usuário autenticado
             })
         });
         
@@ -1489,54 +1498,6 @@ function handleChatMessage(message) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-function renderQueue(queue) {
-    const queueList = document.getElementById('queueList');
-    if (!queueList) return;
-    
-    queueList.innerHTML = '';
-    
-    if (!queue || queue.length === 0) {
-        queueList.innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-list-ol"></i>
-                <p>Fila vazia</p>
-                <small>Adicione músicas da biblioteca ou carregue uma playlist</small>
-            </div>
-        `;
-        return;
-    }
-    
-    queue.forEach((trackId, index) => {
-        // Find track data from library
-        const track = libraryData.find(t => t.id === trackId);
-        if (!track) return;
-        
-        const queueItem = document.createElement('div');
-        queueItem.className = 'queue-item';
-        if (trackId === currentTrackId) {
-            queueItem.classList.add('current-track');
-        }
-        
-        queueItem.innerHTML = `
-            <div class="queue-item-index">${index + 1}</div>
-            <div class="queue-item-info">
-                <div class="queue-item-title">${track.title}</div>
-                <div class="queue-item-meta">ID: ${track.id}</div>
-            </div>
-            <div class="queue-item-actions">
-                <button class="btn btn-sm btn-outline-primary" onclick="playTrackFromQueue(${trackId})">
-                    <i class="fas fa-play"></i>
-                </button>
-                <button class="btn btn-sm btn-outline-danger" onclick="removeFromQueue(${index})">
-                    <i class="fas fa-times"></i>
-                </button>
-            </div>
-        `;
-        
-        queueList.appendChild(queueItem);
-    });
-}
-
 function playTrackFromQueue(trackId) {
     if (!currentPartyId) {
         playTrack(trackId);
@@ -1552,25 +1513,6 @@ function playTrackFromQueue(trackId) {
     sendMessage('player_action', {
         action: 'change_track',
         track_id: trackId
-    });
-}
-
-function removeFromQueue(position) {
-    if (!currentPartyId) {
-        showNotification('Você precisa estar em uma festa para usar a fila', 'warning');
-        return;
-    }
-    
-    const canControl = isHost || currentPartyMode === 'democratic';
-    if (!canControl) {
-        showNotification('Você não tem permissão para controlar a festa', 'warning');
-        return;
-    }
-    
-    sendMessage('queue_action', {
-        action: 'remove',
-        position: position,
-        party_id: currentPartyId
     });
 }
 
@@ -1590,69 +1532,6 @@ function sendChatMessage() {
 }
 
 // --- Updated Player Controls for Next/Previous ---
-
-function updatePlayerControls() {
-    if (!currentPartyId) {
-        // Solo mode - enable all controls
-        nextBtn.disabled = false;
-        prevBtn.disabled = false;
-        return;
-    }
-    
-    const canControl = isHost || currentPartyMode === 'democratic';
-    
-    if (!canControl) {
-        // Member in host mode - disable controls
-        nextBtn.disabled = true;
-        prevBtn.disabled = true;
-    } else {
-        // Host or democratic mode - enable controls
-        nextBtn.disabled = false;
-        prevBtn.disabled = false;
-    }
-}
-
-function handleNextTrack() {
-    if (currentPartyId) {
-        const canControl = isHost || currentPartyMode === 'democratic';
-        if (!canControl) {
-            showNotification('Você não tem permissão para controlar a festa', 'warning');
-            return;
-        }
-        
-        sendMessage('player_action', { action: 'next_track' });
-    } else {
-        // Solo mode - implement local next track logic
-        if (currentQueue.length > 0 && currentTrackId) {
-            const currentIndex = currentQueue.indexOf(currentTrackId);
-            if (currentIndex < currentQueue.length - 1) {
-                const nextTrackId = currentQueue[currentIndex + 1];
-                playTrack(nextTrackId);
-            }
-        }
-    }
-}
-
-function handlePrevTrack() {
-    if (currentPartyId) {
-        const canControl = isHost || currentPartyMode === 'democratic';
-        if (!canControl) {
-            showNotification('Você não tem permissão para controlar a festa', 'warning');
-            return;
-        }
-        
-        sendMessage('player_action', { action: 'prev_track' });
-    } else {
-        // Solo mode - implement local previous track logic
-        if (currentQueue.length > 0 && currentTrackId) {
-            const currentIndex = currentQueue.indexOf(currentTrackId);
-            if (currentIndex > 0) {
-                const prevTrackId = currentQueue[currentIndex - 1];
-                playTrack(prevTrackId);
-            }
-        }
-    }
-}
 
 // --- Initialization ---
 
@@ -1807,13 +1686,202 @@ function setupMobileFallback() {
     }, 10000);
 }
 
+// --- Authentication Functions ---
+
+function showAuthScreen() {
+    const authScreen = document.getElementById('authScreen');
+    if (authScreen) {
+        authScreen.classList.remove('hidden');
+        authScreen.style.display = 'flex';
+    }
+}
+
+function hideAuthScreen() {
+    const authScreen = document.getElementById('authScreen');
+    if (authScreen) {
+        authScreen.classList.add('hidden');
+        setTimeout(() => {
+            authScreen.style.display = 'none';
+        }, 300);
+    }
+}
+
+function showAuthError(message) {
+    const authError = document.getElementById('authError');
+    if (authError) {
+        authError.textContent = message;
+        authError.style.display = 'block';
+    }
+}
+
+function hideAuthError() {
+    const authError = document.getElementById('authError');
+    if (authError) {
+        authError.textContent = '';
+        authError.style.display = 'none';
+    }
+}
+
+async function authenticateUser(nickname) {
+    try {
+        const response = await fetch('/auth/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ nickname })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const userData = await response.json();
+        
+        // Salva dados do usuário autenticado
+        authenticatedUser = {
+            id: userData.id,
+            nickname: userData.nickname
+        };
+        
+        // Atualiza variáveis globais para compatibilidade
+        userId = userData.id.toString();
+        userName = userData.nickname;
+        
+        // Salva no localStorage
+        localStorage.setItem('authenticatedUser', JSON.stringify(authenticatedUser));
+        
+        console.log('✅ Usuário autenticado:', authenticatedUser);
+        return true;
+        
+    } catch (error) {
+        console.error('❌ Erro na autenticação:', error);
+        showAuthError('Erro na autenticação. Tente novamente.');
+        return false;
+    }
+}
+
+function checkStoredAuth() {
+    const stored = localStorage.getItem('authenticatedUser');
+    if (stored) {
+        try {
+            authenticatedUser = JSON.parse(stored);
+            userId = authenticatedUser.id.toString();
+            userName = authenticatedUser.nickname;
+            console.log('🔄 Usuário restaurado do localStorage:', authenticatedUser);
+            return true;
+        } catch (error) {
+            console.error('❌ Erro ao restaurar usuário:', error);
+            localStorage.removeItem('authenticatedUser');
+        }
+    }
+    return false;
+}
+
+function logout() {
+    authenticatedUser = null;
+    userId = null;
+    userName = null;
+    localStorage.removeItem('authenticatedUser');
+    showAuthScreen();
+}
+
+// Função para lidar com o botão continuar da autenticação
+async function handleAuthContinue() {
+    const nicknameInput = document.getElementById('nicknameInput');
+    const authContinueBtn = document.getElementById('authContinueBtn');
+    
+    const nickname = nicknameInput.value.trim();
+    
+    if (!nickname) {
+        showAuthError('Por favor, digite um apelido válido.');
+        return;
+    }
+    
+    if (nickname.length < 2) {
+        showAuthError('O apelido deve ter pelo menos 2 caracteres.');
+        return;
+    }
+    
+    if (nickname.length > 20) {
+        showAuthError('O apelido deve ter no máximo 20 caracteres.');
+        return;
+    }
+    
+    // Desabilitar botão durante autenticação
+    authContinueBtn.disabled = true;
+    authContinueBtn.innerHTML = '<span>Entrando...</span><i class="fas fa-spinner fa-spin"></i>';
+    
+    const success = await authenticateUser(nickname);
+    
+    if (success) {
+        hideAuthScreen();
+        initializeApp();
+    } else {
+        // Reabilitar botão
+        authContinueBtn.disabled = false;
+        authContinueBtn.innerHTML = '<span>Continuar</span><i class="fas fa-arrow-right"></i>';
+    }
+}
+
+// Função para inicializar o app após autenticação
+function initializeApp() {
+    console.log('🚀 Inicializando aplicação para usuário:', authenticatedUser);
+    
+    // Atualizar variáveis globais
+    userId = authenticatedUser.id;
+    userName = authenticatedUser.nickname;
+    
+    // Inicializar o resto da aplicação
+    initializeAppComponents();
+}
+
 // Name Entry Event Listeners - Configurar imediatamente
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('📄 DOM Content Loaded - Configurando event listeners de entrada');
+    console.log('📄 DOM Content Loaded - Inicializando autenticação');
     
-    const nameInput = document.getElementById('userNameInput');
-    const joinButton = document.getElementById('joinButton');
-    const alternativeSubmitButton = document.getElementById('alternativeSubmitButton');
+    // Configurar event listeners de autenticação
+    const nicknameInput = document.getElementById('nicknameInput');
+    const authContinueBtn = document.getElementById('authContinueBtn');
+    const authScreen = document.getElementById('authScreen');
+    
+    // Verificar se já há usuário autenticado
+    if (checkStoredAuth()) {
+        console.log('✅ Usuário já autenticado, iniciando app...');
+        hideAuthScreen();
+        initializeApp();
+    } else {
+        console.log('🔐 Usuário não autenticado, mostrando tela de login...');
+        showAuthScreen();
+    }
+    
+    // Event listener para input de nickname (Enter)
+    if (nicknameInput) {
+        nicknameInput.addEventListener('keypress', async (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                await handleAuthContinue();
+            }
+        });
+        
+        // Limpar erro quando usuário digita
+        nicknameInput.addEventListener('input', () => {
+            hideAuthError();
+        });
+    }
+    
+    // Event listener para botão continuar
+    if (authContinueBtn) {
+        authContinueBtn.addEventListener('click', handleAuthContinue);
+    }
+});
+
+function initializeAppComponents() {
+    console.log('📄 Inicializando componentes da aplicação');
+        
+        const nameInput = document.getElementById('userNameInput');
+        const joinButton = document.getElementById('joinButton');
+        const alternativeSubmitButton = document.getElementById('alternativeSubmitButton');
     const alternativeJoinButton = document.getElementById('alternativeJoinButton');
     const alternativeNameInput = document.getElementById('alternativeNameInput');
     
@@ -1879,7 +1947,11 @@ document.addEventListener('DOMContentLoaded', () => {
         playPlaylistBtn.addEventListener('click', openSelectPlaylistModal);
         console.log('✅ Event listener adicionado ao playPlaylistBtn');
     }
-});
+    
+    // Marcar como configurado para evitar múltiplas inicializações
+    eventListenersSetup = true;
+    console.log('✅ Event listeners configurados com sucesso!');
+} // Fim da função initializeAppComponents
 
 function showAlternativeEntry() {
     console.log('🔧 Mostrando entrada alternativa');
@@ -2485,11 +2557,6 @@ function setupEventListeners() {
             }
         });
     }
-
-    // Marcar como configurado para evitar múltiplas inicializações
-    eventListenersSetup = true;
-    console.log('✅ Event listeners configurados com sucesso!');
-}
 
 function updateVolumeIcon(volume) {
     if (!volumeIcon) return;

@@ -22,8 +22,37 @@
 </head>
 <body class="modern-layout">
 
+<!-- Authentication Screen -->
+<div id="authScreen" class="auth-screen">
+    <div class="auth-container">
+        <div class="auth-card">
+            <div class="auth-header">
+                <div class="auth-logo">
+                    <i class="fas fa-music"></i>
+                </div>
+                <h1 class="auth-title">Torbware Records</h1>
+                <p class="auth-subtitle">Festas musicais sincronizadas</p>
+            </div>
+            <div class="auth-form">
+                <div class="form-group">
+                    <label for="nicknameInput">Escolha seu apelido</label>
+                    <input type="text" id="nicknameInput" class="auth-input" placeholder="Digite seu apelido..." maxlength="20" autocomplete="off">
+                    <div class="auth-error" id="authError"></div>
+                </div>
+                <button id="authContinueBtn" class="auth-btn">
+                    <span>Continuar</span>
+                    <i class="fas fa-arrow-right"></i>
+                </button>
+                <div class="auth-helper">
+                    <p>Seu apelido será usado para identificar você durante as festas musicais.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Name Entry Modal -->
-<div class="modal fade" id="nameModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1">
+<div class="modal fade" id="nameModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" style="display: none;">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content modern-modal">
             <div class="modal-header">
