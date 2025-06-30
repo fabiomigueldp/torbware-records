@@ -3,7 +3,8 @@ import socket
 import json
 import uuid
 import time
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Literal
+import random # Added for shuffle
 
 from fastapi import (
     FastAPI, UploadFile, File, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -129,24 +130,69 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- WebSocket State Management ---
 
+class PlayerState:
+    def __init__(self):
+        self.queue: List[int] = []
+        self.original_queue: List[int] = [] # For unshuffling
+        self.current_index: int = -1 # Index in the queue
+        self.current_track_id: int | None = None
+        self.current_time: float = 0.0
+        self.is_playing: bool = False
+        self.repeat_mode: Literal['off', 'all', 'one'] = 'off'
+        self.is_shuffled: bool = False
+
+    def set_current_track(self):
+        if 0 <= self.current_index < len(self.queue):
+            self.current_track_id = self.queue[self.current_index]
+        else:
+            self.current_track_id = None
+            self.current_index = -1 # Ensure index is reset if queue is empty or out of bounds
+            self.is_playing = False # Stop playing if no track
+
+    def to_dict(self):
+        return {
+            "queue": self.queue,
+            "original_queue": self.original_queue,
+            "current_index": self.current_index,
+            "current_track_id": self.current_track_id,
+            "current_time": self.current_time,
+            "is_playing": self.is_playing,
+            "repeat_mode": self.repeat_mode,
+            "is_shuffled": self.is_shuffled,
+        }
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self.user_names: Dict[str, str] = {}
+        self.player_states: Dict[str, PlayerState] = {} # For solo users
 
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
         self.active_connections[user_id] = websocket
+        if user_id not in self.player_states: # Create player state if not exists
+            self.player_states[user_id] = PlayerState()
 
     def disconnect(self, user_id: str):
         if user_id in self.active_connections:
             del self.active_connections[user_id]
         if user_id in self.user_names:
             del self.user_names[user_id]
+        # Note: We might want to persist player_states or clear them based on requirements.
+        # For now, let's keep them, they might reconnect.
+        # If memory becomes an issue, a cleanup strategy for player_states would be needed.
 
     async def broadcast(self, message: dict):
         for connection in self.active_connections.values():
             await connection.send_json(message)
+
+    async def send_solo_state_update(self, user_id: str):
+        if user_id in self.active_connections and user_id in self.player_states:
+            state = self.player_states[user_id]
+            await self.active_connections[user_id].send_json({
+                "type": "solo_state_update",
+                "payload": state.to_dict()
+            })
 
     def get_users_list(self) -> List[Dict[str, str]]:
         return [{"id": uid, "name": name} for uid, name in self.user_names.items()]
@@ -154,28 +200,35 @@ class ConnectionManager:
     def get_users_list_for_ids(self, user_ids: Set[str]) -> List[Dict[str, str]]:
         return [{"id": uid, "name": self.user_names.get(uid, "Unknown")} for uid in user_ids]
 
-class Party:
-    def __init__(self, host_id: str, host_name: str):
+class Party(PlayerState): # Inherits from PlayerState
+    def __init__(self, host_id: str, host_name: str, initial_player_state: PlayerState | None = None):
+        super().__init__() # Initialize PlayerState attributes
         self.party_id: str = str(uuid.uuid4())
         self.host_id: str = host_id
         self.host_name: str = host_name
         self.members: Set[str] = {host_id}
-        self.current_track_id: int | None = None
-        self.current_time: float = 0.0
-        self.is_playing: bool = False
+        # self.current_track_id, self.current_time, self.is_playing, self.queue are now in PlayerState
         self.mode: str = 'host'  # 'host' or 'democratic'
         self.last_action_timestamp: float = time.time()
         self.last_action_user: str = host_id
         self.action_debounce_time: float = 0.5  # 500ms debounce
-        
-        # Novos atributos para queue e playlist
-        self.queue: List[int] = []  # Lista de track IDs para a queue simples
-        self.chat_history: List[Dict] = []  # Histórico do chat (opcional)
-        
-        # Para integração com playlists
-        self.active_playlist_id: int | None = None
-        self.current_playlist_index: int = 0
-        self.is_playlist_active: bool = False
+        self.chat_history: List[Dict] = []
+
+        if initial_player_state:
+            self.queue = initial_player_state.queue[:]
+            self.original_queue = initial_player_state.original_queue[:]
+            self.current_index = initial_player_state.current_index
+            self.current_track_id = initial_player_state.current_track_id
+            self.current_time = initial_player_state.current_time
+            self.is_playing = initial_player_state.is_playing
+            self.repeat_mode = initial_player_state.repeat_mode
+            self.is_shuffled = initial_player_state.is_shuffled
+            self.set_current_track() # Ensure current_track_id is consistent
+
+        # Deprecated attributes (or their logic needs fundamental change)
+        # self.active_playlist_id: int | None = None
+        # self.current_playlist_index: int = 0 # Replaced by self.current_index
+        # self.is_playlist_active: bool = False # Logic changes: playlists just load into queue
 
     def can_accept_action(self, user_id: str, action_timestamp: float = None) -> bool:
         """
@@ -217,34 +270,34 @@ class Party:
                 track_title = track.title
         db.close()
 
-        return {
+        # Merge PlayerState's dict representation
+        payload = self.to_dict() # This now comes from PlayerState
+        payload.update({
             "party_id": self.party_id,
             "host_name": self.host_name,
             "member_count": len(self.members),
-            "current_track_title": track_title,
+            "current_track_title": track_title, # Keep this for convenience if needed by UI
             "mode": self.mode,
-            "queue": self.queue,
-            "active_playlist_id": self.active_playlist_id,
-            "is_playlist_active": self.is_playlist_active,
-            "current_playlist_index": self.current_playlist_index,
-        }
+            # "queue": self.queue, # Already in PlayerState.to_dict()
+            # "active_playlist_id": self.active_playlist_id, # Deprecated
+            # "is_playlist_active": self.is_playlist_active, # Deprecated
+            # "current_playlist_index": self.current_playlist_index, # Replaced by current_index
+        })
+        return payload
 
     async def broadcast_sync(self, manager: ConnectionManager):
+        # Prepare the full party state including player state
+        party_state_payload = self.to_dict(manager) # Uses the overridden to_dict
+
+        # Add members list, specific to party context
+        party_state_payload["members"] = manager.get_users_list_for_ids(self.members)
+        # Ensure host_id is present for client-side logic (e.g. identifying host)
+        party_state_payload["host_id"] = self.host_id
+
+
         message = {
             "type": "party_sync",
-            "payload": {
-                "party_id": self.party_id,
-                "host_id": self.host_id,
-                "members": manager.get_users_list_for_ids(self.members),
-                "track_id": self.current_track_id,
-                "currentTime": self.current_time,
-                "is_playing": self.is_playing,
-                "mode": self.mode,
-                "queue": self.queue,
-                "active_playlist_id": self.active_playlist_id,
-                "is_playlist_active": self.is_playlist_active,
-                "current_playlist_index": self.current_playlist_index,
-            }
+            "payload": party_state_payload
         }
         for member_id in self.members:
             if member_id in manager.active_connections:
@@ -297,14 +350,32 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             # User joins for the first time
             if msg_type == "user_join":
                 manager.user_names[user_id] = payload.get("name", "Anonymous")
+                # Ensure player state is initialized (connect already does this, but good to be sure)
+                if user_id not in manager.player_states:
+                    manager.player_states[user_id] = PlayerState()
+                await manager.send_solo_state_update(user_id) # Send initial solo state
                 await broadcast_state_update()
 
             # Create a new party
             elif msg_type == "create_party":
-                if user_id not in [p.host_id for p in parties.values()]:
-                    party = Party(host_id=user_id, host_name=manager.user_names.get(user_id, "Unknown"))
+                if user_id not in [p.host_id for p in parties.values()]: # User is not already a host
+                    # Retrieve solo player state
+                    solo_player_state = manager.player_states.get(user_id)
+
+                    party = Party(
+                        host_id=user_id,
+                        host_name=manager.user_names.get(user_id, "Unknown"),
+                        initial_player_state=solo_player_state # Pass solo state to party
+                    )
                     parties[party.party_id] = party
                     user_party_id = party.party_id
+
+                    # Clear or reset solo player state for the user who created the party
+                    if user_id in manager.player_states:
+                        manager.player_states[user_id] = PlayerState() # Reset to default
+                        # Optionally, send an update for the now-empty solo state
+                        # await manager.send_solo_state_update(user_id)
+
                     await party.broadcast_sync(manager)
                     await broadcast_state_update()
 
@@ -330,132 +401,247 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     else:
                         await party.broadcast_sync(manager)
                     user_party_id = None
+                    # If user leaves party, send them their current solo state
+                    await manager.send_solo_state_update(user_id)
                     await broadcast_state_update()
 
             # Player action from a client
-            elif msg_type == "player_action" and user_party_id and user_party_id in parties:
-                party = parties[user_party_id]
-                action_timestamp = time.time()
-                
-                # Verifica se a ação pode ser aceita (anti-race condition)
-                if party.can_accept_action(user_id, action_timestamp):
-                    action = payload.get("action")
-                    
-                    # Atualiza timestamp da ação
-                    party.update_action_timestamp(user_id, action_timestamp)
-                    
-                    print(f"🎮 Ação aceita: {action} de {manager.user_names.get(user_id, 'Unknown')} (modo: {party.mode})")
-                    
-                    if action in ["play", "pause"]:
-                        party.is_playing = action == "play"
-                    elif action == "seek":
-                        party.current_time = payload.get("currentTime", 0)
-                    elif action == "change_track":
-                        party.current_track_id = payload.get("track_id")
-                        party.current_time = 0
-                        party.is_playing = True # Autoplay new track
-                        
-                        # Se uma playlist está ativa, atualiza o índice
-                        if party.is_playlist_active and party.current_track_id in party.queue:
-                            party.current_playlist_index = party.queue.index(party.current_track_id)
-                    
-                    elif action == "next_track":
-                        if party.is_playlist_active and party.queue:
-                            if party.current_playlist_index < len(party.queue) - 1:
-                                party.current_playlist_index += 1
-                                party.current_track_id = party.queue[party.current_playlist_index]
-                                party.current_time = 0
-                                party.is_playing = True
-                                print(f"⏭️ Próxima música: {party.current_track_id}")
-                        elif party.queue and not party.is_playlist_active:
-                            # Queue simples - move para a próxima
-                            if party.current_track_id in party.queue:
-                                current_index = party.queue.index(party.current_track_id)
-                                if current_index < len(party.queue) - 1:
-                                    party.current_track_id = party.queue[current_index + 1]
-                                    party.current_time = 0
-                                    party.is_playing = True
-                    
-                    elif action == "prev_track":
-                        if party.is_playlist_active and party.queue:
-                            if party.current_playlist_index > 0:
-                                party.current_playlist_index -= 1
-                                party.current_track_id = party.queue[party.current_playlist_index]
-                                party.current_time = 0
-                                party.is_playing = True
-                                print(f"⏮️ Música anterior: {party.current_track_id}")
-                        elif party.queue and not party.is_playlist_active:
-                            # Queue simples - move para a anterior
-                            if party.current_track_id in party.queue:
-                                current_index = party.queue.index(party.current_track_id)
-                                if current_index > 0:
-                                    party.current_track_id = party.queue[current_index - 1]
-                                    party.current_time = 0
-                                    party.is_playing = True
-                        
-                    await party.broadcast_sync(manager)
-                    await broadcast_state_update() # To update track title
-                else:
-                    # Ação rejeitada devido ao debounce ou permissões
-                    print(f"🚫 Ação rejeitada: {payload.get('action')} de {manager.user_names.get(user_id, 'Unknown')} - debounce ativo")
-                    # Envia sync para realinhar o cliente que teve ação rejeitada
-                    await party.broadcast_sync(manager)
+            elif msg_type == "player_action":
+                action = payload.get("action")
+                target_state: PlayerState | None = None
+                is_party_action = False
 
-            # Sync update from the host (ou membro em modo democrático)
+                if user_party_id and user_party_id in parties:
+                    party = parties[user_party_id]
+                    action_timestamp = time.time()
+                    if party.can_accept_action(user_id, action_timestamp):
+                        party.update_action_timestamp(user_id, action_timestamp)
+                        target_state = party
+                        is_party_action = True
+                    else:
+                        print(f"🚫 Party action rejected: {action} from {user_id} (debounce/permissions)")
+                        await party.broadcast_sync(manager) # Realign client
+                        continue # Skip processing this action
+                elif not user_party_id and user_id in manager.player_states: # Solo user
+                    target_state = manager.player_states[user_id]
+                
+                if target_state:
+                    print(f"🎮 Player action: {action} for {'party ' + user_party_id if is_party_action else 'solo user ' + user_id}")
+                    if action in ["play", "pause"]:
+                        target_state.is_playing = action == "play"
+                    elif action == "seek":
+                        target_state.current_time = payload.get("currentTime", 0)
+                    elif action == "change_track":
+                        new_track_id = payload.get("track_id")
+                        if new_track_id in target_state.queue:
+                            target_state.current_index = target_state.queue.index(new_track_id)
+                            target_state.set_current_track()
+                            target_state.current_time = 0
+                            target_state.is_playing = True
+                        else: # Track not in queue, try adding it (e.g. from library click)
+                            target_state.queue.append(new_track_id)
+                            target_state.current_index = len(target_state.queue) -1
+                            target_state.set_current_track()
+                            target_state.current_time = 0
+                            target_state.is_playing = True
+                            if target_state.is_shuffled: # also add to original_queue if shuffled
+                                target_state.original_queue.append(new_track_id)
+
+
+                    elif action == "next_track":
+                        if not target_state.queue: continue
+
+                        if target_state.repeat_mode == 'one' and target_state.is_playing:
+                            target_state.current_time = 0 # Repeat current track
+                        elif target_state.current_index < len(target_state.queue) - 1:
+                            target_state.current_index += 1
+                        elif target_state.repeat_mode == 'all': # End of queue, repeat all
+                            target_state.current_index = 0
+                        else: # End of queue, no repeat or repeat one (but not playing)
+                            target_state.is_playing = False
+                            # Optionally, could set current_index to -1 or keep it at end
+
+                        if target_state.is_playing or target_state.repeat_mode == 'all' or \
+                           (target_state.current_index != len(target_state.queue) -1 and target_state.current_index != -1) : # only reset time if actually moving to a track
+                            target_state.set_current_track()
+                            target_state.current_time = 0
+                            target_state.is_playing = True # Autoplay next track
+
+                    elif action == "prev_track":
+                        if not target_state.queue: continue
+
+                        if target_state.current_time > 3 or target_state.current_index == 0 : # If played for >3s or first track, restart current
+                            target_state.current_time = 0
+                        elif target_state.current_index > 0:
+                            target_state.current_index -= 1
+                        # No wrap-around for previous in this logic, can be added if needed
+                        
+                        target_state.set_current_track()
+                        target_state.current_time = 0
+                        target_state.is_playing = True # Autoplay previous track
+
+                    if is_party_action:
+                        await parties[user_party_id].broadcast_sync(manager)
+                        await broadcast_state_update() # To update track title in party list
+                    else:
+                        await manager.send_solo_state_update(user_id)
+
+            # Sync update from party host/democratic member (Only for parties)
             elif msg_type == "sync_update" and user_party_id and user_party_id in parties:
                 party = parties[user_party_id]
-                # Hosts sempre podem enviar sync updates
-                # Em modo democrático, aceita sync de qualquer membro mas com debounce
-                if user_id == party.host_id or (party.mode == 'democratic' and party.can_accept_action(user_id)):
+                is_host_or_democratic_controller = (user_id == party.host_id) or \
+                                                 (party.mode == 'democratic' and party.can_accept_action(user_id))
+
+                if is_host_or_democratic_controller:
                     if party.mode == 'democratic' and user_id != party.host_id:
-                        party.update_action_timestamp(user_id)
+                        party.update_action_timestamp(user_id) # Update if democratic non-host sends
                         
                     party.current_time = payload.get("currentTime", party.current_time)
                     party.is_playing = payload.get("is_playing", party.is_playing)
+                    # Potentially sync other parts of PlayerState if needed, but usually just time/play state
                     await party.broadcast_sync(manager)
 
             # Set party mode (host only)
             elif msg_type == "set_mode" and user_party_id and user_party_id in parties:
                 party = parties[user_party_id]
-                if user_id == party.host_id:
+                if user_id == party.host_id: # Only host can change mode
                     party.mode = payload.get("mode", "host")
                     await party.broadcast_sync(manager)
-                    await broadcast_state_update()
+                    await broadcast_state_update() # Update party list display
 
-            # Queue actions (host or democratic mode)
-            elif msg_type == "queue_action" and user_party_id and user_party_id in parties:
-                party = parties[user_party_id]
-                # Verifica permissões: host ou modo democrático
-                can_control = (user_id == party.host_id) or (party.mode == 'democratic')
+            # Queue actions (add, remove, clear)
+            elif msg_type == "queue_action":
+                action = payload.get("action")
+                track_id = payload.get("track_id")
+                position = payload.get("position")
                 
-                if can_control:
-                    action = payload.get("action")
-                    
+                target_state: PlayerState | None = None
+                is_party_action = False
+
+                if user_party_id and user_party_id in parties:
+                    party = parties[user_party_id]
+                    # Check permissions for party queue modification
+                    if (user_id == party.host_id) or (party.mode == 'democratic'):
+                        target_state = party
+                        is_party_action = True
+                    else:
+                        print(f"🚫 Party queue action rejected: {action} from {user_id} (permissions)")
+                        # Optionally send a rejection message or just ignore
+                        continue
+                elif not user_party_id and user_id in manager.player_states: # Solo user
+                    target_state = manager.player_states[user_id]
+
+                if target_state:
                     if action == "add":
-                        track_id = payload.get("track_id")
-                        if track_id and not party.is_playlist_active:
-                            party.queue.append(track_id)
-                            print(f"🎵 Track {track_id} adicionada à queue por {manager.user_names.get(user_id, 'Unknown')}")
+                        if track_id:
+                            target_state.queue.append(track_id)
+                            if target_state.is_shuffled: # If shuffled, also add to original_queue
+                                target_state.original_queue.append(track_id)
+                            # If queue was empty and this is the first track, set as current
+                            if target_state.current_index == -1:
+                                target_state.current_index = 0
+                                target_state.set_current_track()
+                                # target_state.is_playing = True # Optionally auto-play
                     
                     elif action == "remove":
-                        position = payload.get("position")
-                        if position is not None and 0 <= position < len(party.queue) and not party.is_playlist_active:
-                            removed_track = party.queue.pop(position)
-                            print(f"🗑️ Track {removed_track} removida da queue (posição {position})")
-                    
+                        if position is not None and 0 <= position < len(target_state.queue):
+                            removed_track_id = target_state.queue.pop(position)
+                            if target_state.is_shuffled:
+                                if removed_track_id in target_state.original_queue:
+                                    target_state.original_queue.remove(removed_track_id)
+
+                            # Adjust current_index if the removed track was before or at current_index
+                            if position < target_state.current_index:
+                                target_state.current_index -= 1
+                            elif position == target_state.current_index:
+                                # If current track removed, try to play next or stop
+                                if target_state.current_index >= len(target_state.queue): # Was last track
+                                     target_state.current_index = len(target_state.queue) -1 # Point to new last or -1
+                                target_state.set_current_track()
+                                if not target_state.current_track_id:
+                                    target_state.is_playing = False
+                                else: # auto play next if current was removed
+                                    target_state.current_time = 0
+                                    target_state.is_playing = True
+
+
                     elif action == "clear":
-                        if not party.is_playlist_active:
-                            party.queue.clear()
-                            print(f"🧹 Queue limpa por {manager.user_names.get(user_id, 'Unknown')}")
+                        target_state.queue.clear()
+                        target_state.original_queue.clear()
+                        target_state.current_index = -1
+                        target_state.set_current_track() # This will set current_track_id to None
+                        target_state.is_playing = False
                     
-                    # Broadcast da atualização da queue
-                    queue_message = {
-                        "type": "queue_update",
-                        "payload": {"queue": party.queue}
-                    }
-                    for member_id in party.members:
-                        if member_id in manager.active_connections:
-                            await manager.active_connections[member_id].send_json(queue_message)
+                    if is_party_action:
+                        await parties[user_party_id].broadcast_sync(manager)
+                    else:
+                        await manager.send_solo_state_update(user_id)
+
+            # Toggle Shuffle
+            elif msg_type == "toggle_shuffle":
+                target_state: PlayerState | None = None
+                is_party_action = False
+                if user_party_id and user_party_id in parties:
+                    party = parties[user_party_id]
+                    if (user_id == party.host_id) or (party.mode == 'democratic'):
+                        target_state = party
+                        is_party_action = True
+                elif not user_party_id and user_id in manager.player_states:
+                    target_state = manager.player_states[user_id]
+
+                if target_state:
+                    target_state.is_shuffled = not target_state.is_shuffled
+                    current_track_playing_id = target_state.current_track_id
+
+                    if target_state.is_shuffled:
+                        target_state.original_queue = target_state.queue[:]
+
+                        # Shuffle queue but keep current track at index 0 if playing
+                        if current_track_playing_id and current_track_playing_id in target_state.queue:
+                            playing_track = target_state.queue.pop(target_state.current_index)
+                            random.shuffle(target_state.queue)
+                            target_state.queue.insert(0, playing_track)
+                            target_state.current_index = 0
+                        else:
+                            random.shuffle(target_state.queue)
+                            target_state.current_index = 0 if target_state.queue else -1
+                    else: # Unshuffle
+                        target_state.queue = target_state.original_queue[:]
+                        if current_track_playing_id and current_track_playing_id in target_state.queue:
+                            target_state.current_index = target_state.queue.index(current_track_playing_id)
+                        elif target_state.queue: # If no specific track was playing or it's not in original, pick first
+                            target_state.current_index = 0
+                        else: # Queue is empty
+                            target_state.current_index = -1
+
+                    target_state.set_current_track() # Update current_track_id based on new index
+
+                    if is_party_action:
+                        await parties[user_party_id].broadcast_sync(manager)
+                    else:
+                        await manager.send_solo_state_update(user_id)
+
+            # Set Repeat Mode
+            elif msg_type == "set_repeat_mode":
+                new_mode = payload.get("mode")
+                if new_mode not in ['off', 'all', 'one']: continue
+
+                target_state: PlayerState | None = None
+                is_party_action = False
+                if user_party_id and user_party_id in parties:
+                    party = parties[user_party_id]
+                    if (user_id == party.host_id) or (party.mode == 'democratic'):
+                        target_state = party
+                        is_party_action = True
+                elif not user_party_id and user_id in manager.player_states:
+                    target_state = manager.player_states[user_id]
+
+                if target_state:
+                    target_state.repeat_mode = new_mode
+                    if is_party_action:
+                        await parties[user_party_id].broadcast_sync(manager)
+                    else:
+                        await manager.send_solo_state_update(user_id)
 
             # Chat message
             elif msg_type == "chat_message" and user_party_id and user_party_id in parties:
@@ -504,21 +690,26 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                                 ).order_by(PlaylistTrack.position).all()
                                 
                                 if playlist_tracks:
-                                    # Ativa a playlist
-                                    party.is_playlist_active = True
-                                    party.active_playlist_id = playlist_id
+                                    # Load playlist tracks into the queue
                                     party.queue = [pt.track_id for pt in playlist_tracks]
-                                    party.current_playlist_index = 0
-                                    party.current_track_id = party.queue[0]
-                                    party.is_playing = True
+                                    party.original_queue = party.queue[:] # Store for unshuffling
+                                    party.is_shuffled = False # Reset shuffle when loading new playlist
+                                    party.current_index = 0 if party.queue else -1
+                                    party.set_current_track()
+                                    party.is_playing = True if party.current_track_id else False
                                     party.current_time = 0.0
                                     
-                                    print(f"🎵 Playlist '{playlist.name}' ativada por {manager.user_names.get(user_id, 'Unknown')}")
+                                    print(f"🎵 Playlist '{playlist.name}' loaded into party queue by {manager.user_names.get(user_id, 'Unknown')}")
                                     
                                     await party.broadcast_sync(manager)
-                                    await broadcast_state_update()
+                                    await broadcast_state_update() # Update party list display if needed
                         finally:
                             db.close()
+                # If solo user wants to play a playlist, this logic needs to be handled client-side
+                # or via a new specific solo_playlist_play message.
+                # For now, "set_playlist" is a party-only concept on backend.
+                # Solo users would typically add tracks from a playlist to their queue one by one or via a "play all" client-side.
+
 
     except WebSocketDisconnect:
         # Handle user disconnecting
@@ -526,13 +717,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             party = parties[user_party_id]
             if user_id in party.members:
                 party.members.remove(user_id)
-            if user_id == party.host_id or not party.members:
+            if not party.members or user_id == party.host_id : # If party empty or host left
+                if user_id == party.host_id and party.members: # Host left, but members remain
+                    # Simplistic: disband. Could also implement host migration.
+                    print(f"Host {user_id} left party {party.party_id}, disbanding.")
                 del parties[user_party_id]
-            else:
+            else: # Member left, party continues
                 await party.broadcast_sync(manager)
+        # Note: Solo player state in manager.player_states[user_id] persists after disconnect.
     finally:
-        manager.disconnect(user_id)
-        await broadcast_state_update()
+        manager.disconnect(user_id) # Removes from active_connections and user_names
+        await broadcast_state_update() # Update lists for all clients
 
 
 # --- Standard HTTP Routes ---

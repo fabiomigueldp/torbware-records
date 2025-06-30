@@ -39,14 +39,29 @@ let pendingSeek = null;
 let currentVolume = 100;
 let isMuted = false;
 let shouldAutoPlay = false;  // Controla reprodução automática após carregamento
-let currentQueue = [];
-let soloQueue = []; // Queue for solo mode (when not in a party)
-let repeatMode = 'off'; // 'off', 'all', 'one'
-let isShuffleActive = false;
+
+// Unified Player State
+let playerState = {
+    queue: [],
+    original_queue: [], // For unshuffling
+    current_index: -1,
+    current_track_id: null,
+    current_time: 0.0,
+    is_playing: false,
+    repeat_mode: 'off', // 'off', 'all', 'one'
+    is_shuffled: false,
+};
+
+// Deprecated global state (to be removed or refactored)
+// let currentQueue = []; // Replaced by playerState.queue
+// let soloQueue = []; // Replaced by playerState.queue when solo
+// let repeatMode = 'off'; // Replaced by playerState.repeat_mode
+// let isShuffleActive = false; // Replaced by playerState.is_shuffled
+// let currentTrackId = null; // Replaced by playerState.current_track_id
+
 let libraryData = [];
 let filteredLibrary = [];
-let currentTrackId = null;
-let currentTrackData = null;
+// let currentTrackData = null; // Can be derived from playerState.current_track_id and libraryData
 let eventListenersSetup = false; // Flag para evitar múltiplas inicializações
 
 // Playlist variables
@@ -225,11 +240,21 @@ function handleWebSocketMessage(message) {
         case 'chat_message':
             handleChatMessage(message.payload);
             break;
-        case 'queue_update':
-            console.log('🎵 Queue update received:', message.payload);
-            if (message.payload && message.payload.queue) {
-                renderQueue(message.payload.queue);
-            }
+        // 'queue_update' is effectively replaced by 'party_sync' or 'solo_state_update'
+        // as these will contain the full player state including the queue.
+        // If a specific 'queue_update' message is still sent by backend for parties for some reason,
+        // ensure it updates playerState.queue and re-renders.
+        // case 'queue_update':
+        //     console.log('🎵 Party Queue update received (legacy?):', message.payload);
+        //     if (currentPartyId && message.payload && message.payload.queue) {
+        //         playerState.queue = message.payload.queue;
+        //         // If current_index is out of bounds due to queue change, backend should handle it.
+        //         // Client should primarily rely on current_index from sync.
+        //         renderQueue(playerState.queue, playerState.current_index);
+        //     }
+        //     break;
+        case 'solo_state_update':
+            handleSoloStateUpdate(message.payload);
             break;
         case 'action_rejected':
             console.log('🚫 Ação rejeitada:', message.payload);
@@ -380,9 +405,9 @@ function handleStateUpdate(payload) {
     
     // Update party host name if currently in a party and host info changed
     if (currentPartyId && payload.parties) {
-        const currentParty = payload.parties.find(p => p.party_id === currentPartyId);
-        if (currentParty && partyHostName) {
-            const hostUser = payload.users.find(u => u.id === currentParty.host_id);
+        const currentPartyData = payload.parties.find(p => p.party_id === currentPartyId);
+        if (currentPartyData && partyHostName) { // Ensure partyHostName element exists
+            const hostUser = payload.users.find(u => u.id === currentPartyData.host_id);
             if (hostUser) {
                 partyHostName.textContent = hostUser.name;
             }
@@ -390,183 +415,176 @@ function handleStateUpdate(payload) {
     }
 }
 
-function handlePartySync(party) {
-    console.log('🔄 Party sync recebido:', party);
-    
-    // Validação de estado: verificar se ainda estamos na mesma festa
-    if (currentPartyId && party.party_id !== currentPartyId) {
-        console.warn('⚠️ Recebido sync de festa diferente! Forçando saída...');
-        forceLeaveParty();
-        return;
+function handleSoloStateUpdate(soloStatePayload) {
+    console.log('👤 Solo state update received:', soloStatePayload);
+    if (currentPartyId) {
+        console.warn("Received solo_state_update while in a party. Ignoring.");
+        return; // Should not happen if backend logic is correct
     }
+
+    // Update global playerState
+    playerState.queue = soloStatePayload.queue || [];
+    playerState.original_queue = soloStatePayload.original_queue || [];
+    playerState.current_index = soloStatePayload.current_index !== undefined ? soloStatePayload.current_index : -1;
+    playerState.current_track_id = soloStatePayload.current_track_id || null;
+    playerState.current_time = soloStatePayload.current_time || 0;
+    playerState.is_playing = soloStatePayload.is_playing || false;
+    playerState.repeat_mode = soloStatePayload.repeat_mode || 'off';
+    playerState.is_shuffled = soloStatePayload.is_shuffled || false;
     
-    // Validação: verificar se ainda somos membros da festa
-    if (currentPartyId && party.party_id === currentPartyId) {
-        const isMember = party.members && party.members.some(member => member.id === userId);
-        if (!isMember) {
-            console.warn('⚠️ Não somos mais membros desta festa! Forçando saída...');
-            forceLeaveParty();
+    // Update UI
+    renderQueue(playerState.queue, playerState.current_index);
+    updateShuffleRepeatButtonsUI(); // Reflects playerState.is_shuffled and playerState.repeat_mode
+
+    // Load track if changed and not already loaded
+    // getCurrentTrackId() now refers to player.src, not the old global currentTrackId
+    const audioPlayerCurrentTrackId = player.src ? parseInt(player.src.split('/').pop()) : null;
+
+    if (playerState.current_track_id && playerState.current_track_id !== audioPlayerCurrentTrackId) {
+        console.log('👤 Solo: Loading track from solo_state_update', playerState.current_track_id);
+        loadTrack(playerState.current_track_id); // This will set player.src
+    } else if (!playerState.current_track_id && audioPlayerCurrentTrackId) {
+        // No track in state, but player has one - stop player
+        player.pause();
+        player.src = '';
+        updateTrackDisplay(null); // Clear player bar display
+    }
+
+
+    // Sync player time and play/pause state (gently, as this is authoritative for solo)
+    if (playerState.current_track_id) {
+        if (Math.abs(player.currentTime - playerState.current_time) > 1.5) { // Sync if more than 1.5s diff
+            player.currentTime = playerState.current_time;
+        }
+        if (playerState.is_playing && player.paused) {
+            player.play().catch(e => console.warn("Solo state update play failed:", e));
+        } else if (!playerState.is_playing && !player.paused) {
+            player.pause();
+        }
+    }
+    updatePlayerStatus('solo'); // Ensure status is 'solo'
+}
+
+
+function handlePartySync(partyPayload) {
+    console.log('🔄 Party sync recebido:', partyPayload);
+
+    if (!currentPartyId || partyPayload.party_id !== currentPartyId) {
+         // This could happen if the user just joined the party, and this is the first sync.
+        if (partyPayload.party_id && partyPayload.members.some(m => m.id === userId)) {
+            console.log(`Joining party ${partyPayload.party_id} via sync.`);
+            currentPartyId = partyPayload.party_id;
+             // Clear solo state variables as we are now in a party
+            playerState = { ...playerState, queue: [], original_queue: [], current_index: -1, current_track_id: null, current_time: 0.0, is_playing: false, is_shuffled: false, repeat_mode: 'off' };
+
+        } else {
+            console.warn('⚠️ Recebido sync de festa diferente ou não sou membro! Forçando saída se necessário...');
+            if (currentPartyId) forceLeaveParty(); // Only force leave if we thought we were in a party
             return;
         }
     }
     
     lastSyncReceived = Date.now();
+
+    // Update global playerState from partyPayload
+    playerState.queue = partyPayload.queue || [];
+    playerState.original_queue = partyPayload.original_queue || [];
+    playerState.current_index = partyPayload.current_index !== undefined ? partyPayload.current_index : -1;
+    playerState.current_track_id = partyPayload.current_track_id || null;
+    playerState.current_time = partyPayload.current_time || 0;
+    playerState.is_playing = partyPayload.is_playing || false;
+    playerState.repeat_mode = partyPayload.repeat_mode || 'off';
+    playerState.is_shuffled = partyPayload.is_shuffled || false;
     
-    // SEMPRE renderizar a party primeiro (para UI)
-    renderCurrentParty(party);
+    currentPartyMode = partyPayload.mode; // Keep this for party-specific UI logic
+    isHost = partyPayload.host_id === userId; // Keep this
 
-    if (party.mode === 'host') {
-        if (party.host_id === userId) {
-            console.log('👑 HOST MODE: Você é o host - IGNORANDO TOTALMENTE sync de controles');
-            
-            // Host NUNCA aplica sync de controles do servidor
-            // Apenas verifica se precisa mudar música (e somente se não foi ele que mudou)
-            const currentTrackId = getCurrentTrackId();
-            if (party.track_id && party.track_id !== currentTrackId) {
-                const timeSinceAction = Date.now() - lastPlayerAction;
-                
-                // Se o host fez uma ação recente, ignore mudanças de música vindas do servidor
-                if (timeSinceAction < 2000) {
-                    console.log('👑 Host: Ignorando mudança de música - ação recente própria');
-                } else {
-                    console.log('🎵 Host: Mudança de música externa:', party.track_id);
-                    loadTrack(party.track_id);
-                }
-            }
-            
-            // Host faz broadcast do seu estado (com limite de frequência)
-            if (!hostSyncInterval) {
-                console.log('👑 Host: Iniciando broadcast limitado do estado');
-                hostSyncInterval = setInterval(() => {
-                    if (ws && ws.readyState === WebSocket.OPEN && player && currentPartyId) {
-                        const timeSinceLastSync = Date.now() - lastSyncReceived;
-                        
-                        // Só envia se não recebeu sync muito recentemente (evita loops)
-                        if (timeSinceLastSync > 2000) {
-                            sendMessage('sync_update', {
-                                currentTime: player.currentTime,
-                                is_playing: !player.paused,
-                                track_id: getCurrentTrackId()
-                            });
-                        }
-                    }
-                }, 1500); // Reduzido para 1.5s para menos spam
-            }
-            
-            // HOST PARA AQUI - NUNCA APLICA SYNC
-            return;
-            
-        } else {
-            console.log('👥 HOST MODE: Você é membro - aplicando sync do host');
-            
-            // Membros SEMPRE aplicam sync do host
-            applySyncUpdate(party, false);
-            
-            // Membros não fazem broadcast
-            if (hostSyncInterval) {
-                clearInterval(hostSyncInterval);
-                hostSyncInterval = null;
-            }
-        }
-    } else if (party.mode === 'democratic') {
-        console.log('🗳️ DEMOCRATIC MODE: Aplicando sync democrático');
-        
-        // Em modo democrático, todos sincronizam, mas com proteção para ações recentes
-        const timeSinceAction = Date.now() - lastPlayerAction;
-        const hasRecentAction = timeSinceAction < 2000;
-        
-        if (hasRecentAction) {
-            console.log('🗳️ Ignorando sync - ação recente do usuário');
-            
-            // Apenas muda música se diferente
-            if (party.track_id && party.track_id !== getCurrentTrackId()) {
-                console.log('🎵 Democrático: Mudando música apenas');
-                loadTrack(party.track_id);
-            }
-        } else {
-            console.log('🗳️ Aplicando sincronização democrática');
-            applySyncUpdate(party, true);
-        }
-        
-        // Em modo democrático não há broadcast específico
-        if (hostSyncInterval) {
-            clearInterval(hostSyncInterval);
-            hostSyncInterval = null;
-        }
-    }
-}
+    // Render generic party UI (members, host name, etc.)
+    renderCurrentParty(partyPayload); // This function now uses partyPayload directly
 
-function applySyncUpdate(party, gentle = false) {
-    isSyncing = true;
-    
-    console.log(`🔄 Aplicando sync ${gentle ? '(gentle)' : '(forceful)'}:`, {
-        track_id: party.track_id,
-        currentTime: party.currentTime,
-        is_playing: party.is_playing,
-        currentPlayerTime: player.currentTime,
-        currentPlayerPaused: player.paused
-    });
+    // Render queue based on new playerState
+    renderQueue(playerState.queue, playerState.current_index);
+    updateShuffleRepeatButtonsUI();
 
-    try {
-        // Change track if needed
-        if (party.track_id && party.track_id !== getCurrentTrackId()) {
-            console.log('🎵 Sync: Mudando música:', party.track_id);
-            loadTrack(party.track_id);
-        }
 
-        // Calculate time difference and tolerance
-        const timeTolerance = gentle ? 4.0 : 1.5;
-        const timeDifference = Math.abs(player.currentTime - party.currentTime);
-        
-        // Protection against recent actions - be more conservative
-        const timeSinceAction = Date.now() - lastPlayerAction;
-        const hasVeryRecentAction = timeSinceAction < 2000; // 2 second protection padronizado
-        const effectiveTolerance = hasVeryRecentAction ? timeTolerance * 3 : timeTolerance;
-        
-        console.log(`⏰ Time analysis: diff=${timeDifference.toFixed(2)}s, tolerance=${effectiveTolerance.toFixed(1)}s, timeSinceAction=${timeSinceAction}ms`);
-        
-        // Only sync time if significant difference and no recent action
-        if (party.track_id && timeDifference > effectiveTolerance) {
-            if (hasVeryRecentAction && timeDifference < 8.0) {
-                console.log(`⏰ SKIP: Ação muito recente (${timeSinceAction}ms) e diferença pequena (${timeDifference.toFixed(2)}s)`);
+    // Sync logic (similar to applySyncUpdate, but adapted for unified playerState)
+    const audioPlayerCurrentTrackId = player.src ? parseInt(player.src.split('/').pop()) : null;
+
+    if (partyPayload.host_id === userId && partyPayload.mode === 'host') {
+        console.log('👑 HOST MODE: Você é o host. Client state is authoritative.');
+        // Host only sends updates, doesn't apply them strictly from server unless track ID changes externally.
+        if (playerState.current_track_id && playerState.current_track_id !== audioPlayerCurrentTrackId) {
+            const timeSinceAction = Date.now() - lastPlayerAction;
+            if (timeSinceAction > 2000) { // If action wasn't recent by host
+                 console.log('🎵 Host: External track change detected in sync, loading:', playerState.current_track_id);
+                loadTrack(playerState.current_track_id);
             } else {
-                console.log(`⏰ Ajustando tempo: ${player.currentTime.toFixed(2)}s -> ${party.currentTime.toFixed(2)}s`);
-                player.currentTime = party.currentTime;
+                console.log('👑 Host: Ignorando mudança de música do sync - ação recente própria');
             }
-        } else {
-            console.log(`⏰ Tempo OK: diferença ${timeDifference.toFixed(2)}s dentro da tolerância`);
         }
-
-        // Sync play/pause state - be more careful with recent actions
-        const playStateDifferent = (party.is_playing && player.paused) || (!party.is_playing && !player.paused);
-        
-        if (playStateDifferent) {
-            if (hasVeryRecentAction) {
-                console.log(`▶️⏸️ SKIP: Estado de reprodução - ação muito recente (${timeSinceAction}ms)`);
-            } else {
-                if (party.is_playing && player.paused) {
-                    console.log('▶️ Iniciando reprodução (sync)');
-                    player.play().catch(e => {
-                        console.warn("Autoplay prevented:", e);
-                        showNotification('Clique no player para iniciar', 'info');
+        if (!hostSyncInterval) {
+            hostSyncInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN && player && currentPartyId) {
+                    sendMessage('sync_update', { // Host sends its current state
+                        currentTime: player.currentTime,
+                        is_playing: !player.paused,
+                        // track_id: playerState.current_track_id // Not needed, server knows party's track
                     });
-                } else if (!party.is_playing && !player.paused) {
-                    console.log('⏸️ Pausando reprodução (sync)');
+                }
+            }, 1500);
+        }
+        return; // Host doesn't apply detailed sync for time/play state from server
+    }
+
+    // For members or democratic mode participants:
+    isSyncing = true; // Use a global isSyncing flag if needed for other parts of UI
+
+    if (playerState.current_track_id && playerState.current_track_id !== audioPlayerCurrentTrackId) {
+        console.log('🎵 Sync: Mudando música (party):', playerState.current_track_id);
+        loadTrack(playerState.current_track_id); // This will set player.src
+    } else if (!playerState.current_track_id && audioPlayerCurrentTrackId) {
+        player.pause();
+        player.src = '';
+        updateTrackDisplay(null);
+    }
+
+    const timeSinceAction = Date.now() - lastPlayerAction;
+    const gentleSync = partyPayload.mode === 'democratic' && timeSinceAction < 2000; // More gentle if user acted recently in democratic
+    const timeTolerance = gentleSync ? 4.0 : 1.5;
+
+    if (playerState.current_track_id) { // Only sync time/play if a track is supposed to be active
+        const timeDifference = Math.abs(player.currentTime - playerState.current_time);
+        if (timeDifference > timeTolerance) {
+            if (timeSinceAction < 2000 && timeDifference < 8.0 && partyPayload.mode === 'democratic') { // User made recent action
+                 console.log(`⏰ SKIP democratic seek: Ação recente (${timeSinceAction}ms) e diferença pequena (${timeDifference.toFixed(2)}s)`);
+            } else {
+                console.log(`⏰ Ajustando tempo (party): ${player.currentTime.toFixed(2)}s -> ${playerState.current_time.toFixed(2)}s`);
+                player.currentTime = playerState.current_time;
+            }
+        }
+
+        const playStateDifferent = (playerState.is_playing && player.paused) || (!playerState.is_playing && !player.paused);
+        if (playStateDifferent) {
+             if (timeSinceAction < 2000 && partyPayload.mode === 'democratic') {
+                 console.log(`▶️⏸️ SKIP democratic play/pause: Ação recente (${timeSinceAction}ms)`);
+             } else {
+                if (playerState.is_playing && player.paused) {
+                    console.log('▶️ Iniciando reprodução (party sync)');
+                    player.play().catch(e => console.warn("Party sync autoplay prevented:", e));
+                } else if (!playerState.is_playing && !player.paused) {
+                    console.log('⏸️ Pausando reprodução (party sync)');
                     player.pause();
                 }
             }
-        } else {
-            console.log('▶️⏸️ Estado de reprodução já sincronizado');
         }
-        
-    } catch (error) {
-        console.error('Erro na sincronização:', error);
-    } finally {
-        setTimeout(() => { 
-            isSyncing = false; 
-            console.log('✅ Sincronização concluída');
-        }, 300);
     }
+
+    if (hostSyncInterval && partyPayload.mode === 'democratic') { // Stop host-specific interval if mode changes
+        clearInterval(hostSyncInterval);
+        hostSyncInterval = null;
+    }
+
+    setTimeout(() => { isSyncing = false; }, 300);
 }
 
 // --- UI Helper Functions ---
@@ -950,130 +968,113 @@ function updatePlayerStatus(mode) {
 
 // --- Track Management Functions ---
 
-function getCurrentTrackId() {
-    return currentTrackId;
-}
+// function getCurrentTrackId() { // Now use playerState.current_track_id
+//     return playerState.current_track_id;
+// }
 
-function getCurrentTrackData() {
-    return currentTrackData;
-}
+// function getCurrentTrackData() { // Derive from playerState.current_track_id and libraryData
+//     if (!playerState.current_track_id) return null;
+//     return libraryData.find(t => t.id === playerState.current_track_id);
+// }
 
-async function loadTrack(trackId) {
+async function loadTrack(trackId, playWhenReady = false) {
     if (!trackId) {
-        console.log('❌ Track ID is null/undefined');
+        console.log('❌ Track ID is null/undefined for loadTrack');
+        // If there's no track, ensure player is reset
+        player.pause();
+        player.src = '';
+        updateTrackDisplay(null); // Clear display
+        if(playerState.is_playing) playerState.is_playing = false; // Reflect in state
+        if(playerState.current_track_id) playerState.current_track_id = null;
+        if(playerState.current_index !== -1) playerState.current_index = -1;
         return;
     }
     
-    console.log('🎵 Loading track:', trackId);
+    console.log('🎵 Loading track:', trackId, "Play when ready:", playWhenReady);
     
     try {
-        // Find track in library data
         const track = libraryData.find(t => t.id === trackId);
         if (!track) {
             console.error('❌ Track not found in library:', trackId);
             showNotification('Música não encontrada na biblioteca', 'error');
+            // If track not found, and it was the current track in state, clear it.
+            if (playerState.current_track_id === trackId) {
+                playerState.current_track_id = null;
+                playerState.is_playing = false;
+                playerState.current_index = -1; // Or find next valid? For now, just clear.
+                 if (!currentPartyId) await sendMessage('player_action', { action: 'stop_if_invalid_track' }); // Inform backend if solo
+            }
             return;
         }
         
-        // Desabilitar a barra de progresso imediatamente para evitar race condition
-        if (progressBar) {
-            progressBar.parentElement.classList.add('loading');
-            console.log('🚫 Progress bar desabilitada durante carregamento');
-        }
+        if (progressBar) progressBar.parentElement.classList.add('loading');
         
-        currentTrackId = trackId;
-        currentTrackData = track;
-        
-        // Update player source
+        // playerState.current_track_id = trackId; // This should be set by the source of truth (backend)
+                                                // or by user action that then informs backend.
+                                                // loadTrack is more of a reaction to state change.
+        // currentTrackData = track; // Replaced by deriving from playerState.current_track_id
+
         const baseUrl = getBaseURL();
         const streamUrl = `${baseUrl}/stream/${trackId}`;
-        console.log('🎵 Setting player source:', streamUrl);
         
-        player.src = streamUrl;
+        // Only change src if it's different, to avoid unnecessary reloads/flicker
+        if (player.src !== streamUrl) {
+            console.log('🎵 Setting player source:', streamUrl);
+            player.src = streamUrl;
+            shouldAutoPlay = playWhenReady || playerState.is_playing; // Play if state says so, or if explicitly requested
+        } else if (playWhenReady && player.paused) { // Same track, but want to play
+             player.play().catch(e => console.warn("loadTrack play failed (same track):", e));
+        }
+
+
+        updateTrackDisplay(track); // Update player bar title etc.
         
-        // Update UI elements
-        updateTrackDisplay(track);
-        
-        // Update now playing in party view if in party
+        // Update now playing in party view (if in party and elements exist)
         if (currentPartyId && currentTrackTitle && currentTrackArtist) {
             currentTrackTitle.textContent = track.title;
-            currentTrackArtist.textContent = `Arquivo: ${track.filename || 'Unknown'}`;
+            // currentTrackArtist.textContent = `Arquivo: ${track.filename || 'Unknown'}`; // This might be too detailed
         }
         
-        console.log('✅ Track loaded successfully:', track.title);
+        console.log('✅ Track load initiated for:', track.title);
         
     } catch (error) {
         console.error('❌ Error loading track:', error);
         showNotification('Erro ao carregar música', 'error');
-        
-        // Sempre re-habilitar a barra de progresso em caso de erro
-        if (progressBar) {
-            progressBar.parentElement.classList.remove('loading');
-            console.log('🔄 Progress bar re-habilitada após erro');
-        }
+        if (progressBar) progressBar.parentElement.classList.remove('loading');
     }
 }
 
-function updateTrackDisplay(track) {
-    // Update player bar
+function updateTrackDisplay(trackData) { // trackData can be null
     if (playerTrackTitle) {
-        playerTrackTitle.textContent = track.title;
+        playerTrackTitle.textContent = trackData ? trackData.title : "Nenhuma música";
     }
-    
-    // Update status based on party mode
-    updatePlayerStatus(currentPartyId ? 
-        (isHost ? 'host' : (currentPartyMode === 'democratic' ? 'democratic' : 'member')) : 
-        'solo'
-    );
+    // Status (solo/host/member) is updated by handlePartySync or handleSoloStateUpdate
 }
 
 // --- Player Functions ---
 
-function playTrack(trackId) {
-    console.log('🎵 Play track requested:', trackId);
-    console.log('🎵 Current state:', { currentPartyId, isHost, currentPartyMode });
+function playTrack(trackId) { // This function is primarily for when a user clicks a track in the library
+    console.log('🎵 User requested playTrack:', trackId);
     
+    // Regardless of solo/party, send a 'change_track' action.
+    // The backend will handle the state update (solo or party) and sync back.
+    sendMessage('player_action', {
+        action: 'change_track',
+        track_id: trackId
+    });
+
+    // Optimistically load and try to play for better UX, backend will confirm/correct state.
+    // loadTrack(trackId, true); // true to play when ready
+
     if (!currentPartyId) {
-        // MODO SOLO - Apenas carrega a música. O autoplay via canplay cuidará da reprodução.
-        console.log('🎧 SOLO: Apenas carregando música. O autoplay cuidará do resto.');
-        shouldAutoPlay = true;  // Sinaliza que deve reproduzir quando o áudio carregar
-        loadTrack(trackId);
-        // Removido: player.play() - agora delegamos para o evento canplay
-        return;
-    }
-    
-    if (currentPartyMode === 'host') {
-        if (isHost) {
-            // HOST EM MODO HOST - Controle total, mas notifica mudança de música
-            console.log('👑 HOST: Mudando música com controle total');
-            lastPlayerAction = Date.now();
-            loadTrack(trackId);
-            
-            // Host agora envia mudança de música para sincronizar membros
-            sendMessage('player_action', { 
-                action: 'change_track', 
-                track_id: trackId 
-            });
-            
-            showNotification('Alterando música da festa (host)', 'info');
-        } else {
-            // MEMBRO EM MODO HOST - Não pode controlar
-            console.log('🚫 MEMBRO: Não pode trocar música em modo host');
-            showNotification('Apenas o host pode trocar a música', 'warning');
-        }
-    } else if (currentPartyMode === 'democratic') {
-        // MODO DEMOCRÁTICO - Todos podem controlar e sincronizam
-        console.log('🗳️ DEMOCRÁTICO: Enviando mudança de música para sincronização');
-        lastPlayerAction = Date.now();
-        
-        sendMessage('player_action', { 
-            action: 'change_track', 
-            track_id: trackId 
-        });
-        
-        showNotification('Alterando música da festa (democrático)', 'info');
+        showNotification(`Carregando ${libraryData.find(t=>t.id===trackId)?.title || 'música'}...`, 'info');
+    } else {
+        // Party message depends on canControl, but action is sent anyway.
+        // Backend debounce/permissions will handle it.
+        showNotification(`Sugerindo ${libraryData.find(t=>t.id===trackId)?.title || 'música'} para a festa...`, 'info');
     }
 }
+
 
 function formatTime(seconds) {
     if (isNaN(seconds)) return '0:00';
@@ -1248,103 +1249,147 @@ function filterLibrary(searchTerm) {
 }
 
 function addToQueue(trackId) {
-    if (!currentPartyId) {
-        showNotification('Você precisa estar em uma festa para usar a fila', 'warning');
-        return;
-    }
-    
-    const canControl = isHost || currentPartyMode === 'democratic';
-    if (!canControl) {
-        showNotification('Você não pode adicionar músicas à fila neste modo', 'warning');
-        return;
-    }
-    
     const track = libraryData.find(t => t.id === trackId);
     if (!track) {
-        showNotification('Música não encontrada', 'error');
+        showNotification('Música não encontrada na biblioteca para adicionar à fila.', 'error');
         return;
     }
+
+    // Optimistically update local playerState for solo users for faster UI feedback
+    if (!currentPartyId) {
+        playerState.queue.push(trackId);
+        if (playerState.is_shuffled) {
+            playerState.original_queue.push(trackId);
+        }
+        if (playerState.current_index === -1 && playerState.queue.length === 1) { // If it's the first track
+            playerState.current_index = 0;
+            playerState.current_track_id = trackId;
+             // loadTrack(trackId, false); // Load but don't auto-play, backend confirms play state
+        }
+        renderQueue(playerState.queue, playerState.current_index);
+    }
     
-    // Send add to queue message to server
-    sendMessage('queue_action', { 
-        action: 'add', 
-        track_id: trackId,
-        party_id: currentPartyId 
+    // Always send to server
+    sendMessage('queue_action', {
+        action: 'add',
+        track_id: trackId
+        // party_id is implicit on the backend if user is in a party
     });
     
-    showNotification(`"${track.title}" adicionada à fila`, 'success');
+    showNotification(`"${track.title}" adicionada à fila.`, 'success');
 }
 
-function renderQueue(queue) {
-    if (!queueList) return;
-    
-    queueList.innerHTML = '';
-    
-    if (!queue || queue.length === 0) {
+
+function renderQueue(queueTrackIds, currentTrackIndex) {
+    if (!queueList) return; // queueList is the DOM element for the queue UI
+
+    queueList.innerHTML = ''; // Clear previous items
+
+    if (!queueTrackIds || queueTrackIds.length === 0) {
         queueList.innerHTML = `
             <div class="empty-state">
-                <i class="fas fa-list-ul"></i>
-                <p>A fila está vazia</p>
-                <small>Adicione músicas da biblioteca</small>
-            </div>
-        `;
+                <i class="fas fa-list-ol"></i>
+                <p>Fila vazia</p>
+                <small>Adicione músicas da biblioteca.</small>
+            </div>`;
         return;
     }
-    
-    queue.forEach((queueItem, index) => {
-        const track = libraryData.find(t => t.id === queueItem.track_id) || 
-                     { id: queueItem.track_id, title: queueItem.title || `Track ${queueItem.track_id}` };
-        
-        const queueItemElement = document.createElement('div');
-        queueItemElement.className = 'queue-item';
-        queueItemElement.innerHTML = `
-            <div class="queue-item-position">${index + 1}</div>
+
+    queueTrackIds.forEach((trackId, index) => {
+        const track = libraryData.find(t => t.id === trackId);
+        if (!track) {
+            console.warn(`Track ID ${trackId} not found in libraryData during queue render.`);
+            return; // Skip rendering if track details aren't available
+        }
+
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'queue-item';
+        if (index === currentTrackIndex) {
+            itemDiv.classList.add('current-track');
+        }
+        // Make item clickable to play from queue (sends 'change_track' action)
+        itemDiv.onclick = () => playTrackFromQueue(trackId);
+
+
+        itemDiv.innerHTML = `
+            <div class="queue-item-index">${index + 1}</div>
             <div class="queue-item-info">
                 <div class="queue-item-title">${track.title}</div>
-                <div class="queue-item-added-by">Adicionado por: ${queueItem.added_by || 'Desconhecido'}</div>
+                <div class="queue-item-meta">ID: ${track.id}</div>
             </div>
             <div class="queue-item-actions">
-                <button class="btn btn-sm btn-outline-danger remove-queue-btn" 
-                        onclick="removeFromQueue(${index})" 
-                        title="Remover da fila">
+                <button class="btn btn-sm btn-outline-danger remove-from-queue-btn" title="Remover da Fila">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
         `;
-        queueList.appendChild(queueItemElement);
+
+        // Add event listener for the remove button INSIDE this loop
+        const removeBtn = itemDiv.querySelector('.remove-from-queue-btn');
+        removeBtn.onclick = (e) => {
+            e.stopPropagation(); // Prevent playTrackFromQueue due to event bubbling
+            removeFromQueue(index);
+        };
+
+        queueList.appendChild(itemDiv);
     });
 }
 
-function removeFromQueue(position) {
-    if (!currentPartyId) return;
-    
-    const canControl = isHost || currentPartyMode === 'democratic';
-    if (!canControl) {
-        showNotification('Você não pode remover músicas da fila neste modo', 'warning');
-        return;
+
+function playTrackFromQueue(trackId) {
+    // This function will send a 'change_track' action.
+    // The backend will update the current_index and current_track_id.
+    // The client will then receive a party_sync or solo_state_update.
+    sendMessage('player_action', {
+        action: 'change_track',
+        track_id: trackId
+    });
+}
+
+
+function removeFromQueue(positionInQueue) {
+    // Optimistically update UI for solo mode
+    if (!currentPartyId) {
+        const removedTrackId = playerState.queue[positionInQueue];
+        playerState.queue.splice(positionInQueue, 1);
+        if (playerState.is_shuffled && removedTrackId) {
+            const originalIndex = playerState.original_queue.indexOf(removedTrackId);
+            if (originalIndex > -1) {
+                playerState.original_queue.splice(originalIndex, 1);
+            }
+        }
+
+        // Adjust current_index if necessary
+        if (positionInQueue < playerState.current_index) {
+            playerState.current_index--;
+        } else if (positionInQueue === playerState.current_index) {
+            // If current track removed, logic to play next or stop is handled by backend state update
+            // For optimistic UI, we might just re-render. Backend will send new state.
+             playerState.current_index = Math.min(playerState.current_index, playerState.queue.length - 1);
+             if (playerState.queue.length === 0) playerState.current_index = -1;
+
+        }
+        renderQueue(playerState.queue, playerState.current_index);
     }
-    
-    sendMessage('queue_action', { 
-        action: 'remove', 
-        position: position,
-        party_id: currentPartyId 
+
+    sendMessage('queue_action', {
+        action: 'remove',
+        position: positionInQueue
     });
 }
 
 function clearQueue() {
-    if (!currentPartyId) return;
-    
-    const canControl = isHost || currentPartyMode === 'democratic';
-    if (!canControl) {
-        showNotification('Você não pode limpar a fila neste modo', 'warning');
-        return;
-    }
-    
     if (confirm('Tem certeza que deseja limpar toda a fila?')) {
-        sendMessage('queue_action', { 
-            action: 'clear',
-            party_id: currentPartyId 
-        });
+        if (!currentPartyId) { // Optimistic UI for solo
+            playerState.queue = [];
+            playerState.original_queue = [];
+            playerState.current_index = -1;
+            playerState.current_track_id = null;
+            playerState.is_playing = false;
+            renderQueue(playerState.queue, playerState.current_index);
+            loadTrack(null); // Stop player
+        }
+        sendMessage('queue_action', { action: 'clear' });
     }
 }
 
@@ -1752,69 +1797,84 @@ function sendChatMessage() {
 
 // --- Updated Player Controls for Next/Previous ---
 
-function updatePlayerControls() {
-    if (!currentPartyId) {
-        // Solo mode - enable all controls
-        nextBtn.disabled = false;
-        prevBtn.disabled = false;
-        return;
-    }
+function updatePlayerControlsVisuals() { // Renamed to avoid conflict and clarify purpose
+    // This function now PRIMARILY updates the visual state (disabled/enabled) of buttons.
+    // The actual ability to control is determined by playerState and server responses.
+    // However, for immediate UX, we can disable buttons if not in a state to use them.
+
+    const canCurrentlyControl = !currentPartyId || isHost || currentPartyMode === 'democratic';
+
+    if (playPauseBtn) playPauseBtn.disabled = !canCurrentlyControl && currentPartyId;
+    if (prevBtn) prevBtn.disabled = (!canCurrentlyControl && currentPartyId) || playerState.queue.length === 0;
+    if (nextBtn) nextBtn.disabled = (!canCurrentlyControl && currentPartyId) || playerState.queue.length === 0;
     
-    const canControl = isHost || currentPartyMode === 'democratic';
-    
-    if (!canControl) {
-        // Member in host mode - disable controls
-        nextBtn.disabled = true;
-        prevBtn.disabled = true;
-    } else {
-        // Host or democratic mode - enable controls
-        nextBtn.disabled = false;
-        prevBtn.disabled = false;
-    }
+    // Shuffle and Repeat buttons are always enabled, their action depends on context.
+    // ProgressBar is handled by its own logic in renderCurrentParty/updatePlayerControls.
 }
 
+
 function handleNextTrack() {
-    if (currentPartyId) {
-        const canControl = isHost || currentPartyMode === 'democratic';
-        if (!canControl) {
-            showNotification('Você não tem permissão para controlar a festa', 'warning');
-            return;
-        }
-        
-        sendMessage('player_action', { action: 'next_track' });
-    } else {
-        // Solo mode - implement local next track logic
-        if (currentQueue.length > 0 && currentTrackId) {
-            const currentIndex = currentQueue.indexOf(currentTrackId);
-            if (currentIndex < currentQueue.length - 1) {
-                const nextTrackId = currentQueue[currentIndex + 1];
-                playTrack(nextTrackId);
-            }
-        }
-    }
+    console.log('⏭️ Next track button clicked');
+    // Action is always sent to backend. Backend determines new state.
+    sendMessage('player_action', { action: 'next_track' });
+    // Optimistic UI updates are handled by backend sending back new playerState.
 }
 
 function handlePrevTrack() {
-    if (currentPartyId) {
-        const canControl = isHost || currentPartyMode === 'democratic';
-        if (!canControl) {
-            showNotification('Você não tem permissão para controlar a festa', 'warning');
-            return;
+    console.log('⏮️ Previous track button clicked');
+    // Action is always sent to backend.
+    sendMessage('player_action', { action: 'prev_track' });
+}
+
+function handleToggleShuffle() {
+    console.log('🔀 Toggle shuffle button clicked');
+    sendMessage('toggle_shuffle', {});
+    // Optimistic UI: update button state immediately, server will confirm/override
+    // playerState.is_shuffled = !playerState.is_shuffled; // This might be too fast, let server confirm
+    // updateShuffleRepeatButtonsUI();
+}
+
+function handleSetRepeatMode() {
+    console.log('🔁 Set repeat mode button clicked');
+    let newMode = 'off';
+    if (playerState.repeat_mode === 'off') newMode = 'all';
+    else if (playerState.repeat_mode === 'all') newMode = 'one';
+    // else if (playerState.repeat_mode === 'one') newMode = 'off'; // Cycle back
+
+    sendMessage('set_repeat_mode', { mode: newMode });
+    // Optimistic UI:
+    // playerState.repeat_mode = newMode; // Let server confirm
+    // updateShuffleRepeatButtonsUI();
+}
+
+function updateShuffleRepeatButtonsUI() {
+    const shuffleBtn = document.getElementById('shuffleBtn');
+    const repeatBtn = document.getElementById('repeatBtn');
+
+    if (shuffleBtn) {
+        if (playerState.is_shuffled) {
+            shuffleBtn.classList.add('active');
+            shuffleBtn.innerHTML = '<i class="fas fa-random"></i>'; // Or a filled icon
+        } else {
+            shuffleBtn.classList.remove('active');
+            shuffleBtn.innerHTML = '<i class="fas fa-random"></i>';
         }
-        
-        sendMessage('player_action', { action: 'prev_track' });
-    } else {
-        // Solo mode - implement local previous track logic
-        if (currentQueue.length > 0 && currentTrackId) {
-            const currentIndex = currentQueue.indexOf(currentTrackId);
-            if (currentIndex > 0) {
-                const prevTrackId = currentQueue[currentIndex - 1];
-                playTrack(prevTrackId);
-            }
+    }
+
+    if (repeatBtn) {
+        repeatBtn.classList.remove('repeat-all', 'repeat-one'); // Clear previous states
+        if (playerState.repeat_mode === 'all') {
+            repeatBtn.classList.add('active', 'repeat-all');
+            repeatBtn.innerHTML = '<i class="fas fa-repeat"></i>'; // Standard repeat icon
+        } else if (playerState.repeat_mode === 'one') {
+            repeatBtn.classList.add('active', 'repeat-one');
+            repeatBtn.innerHTML = '<i class="fas fa-repeat-1-alt"></i>'; // Specific icon for repeat one
+        } else { // 'off'
+            repeatBtn.classList.remove('active');
+            repeatBtn.innerHTML = '<i class="fas fa-repeat"></i>';
         }
     }
 }
-
 
 
 // --- Initialization ---
@@ -2052,8 +2112,9 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchPlaylists();
         
         // Configurar controles do player
-        updatePlayerControls(true);
+        updatePlayerControlsVisuals(); // Use the renamed function
         updatePlayerStatus('solo');
+        updateShuffleRepeatButtonsUI(); // Initialize shuffle/repeat buttons
         
         // Configurar volume inicial
         if (volumeRange) {
@@ -2155,6 +2216,17 @@ document.addEventListener('DOMContentLoaded', () => {
         
         if (nextBtn) {
             nextBtn.addEventListener('click', handleNextTrack);
+        }
+
+        // Shuffle and Repeat Button Event Listeners
+        const shuffleBtn = document.getElementById('shuffleBtn');
+        if (shuffleBtn) {
+            shuffleBtn.addEventListener('click', handleToggleShuffle);
+        }
+
+        const repeatBtn = document.getElementById('repeatBtn');
+        if (repeatBtn) {
+            repeatBtn.addEventListener('click', handleSetRepeatMode);
         }
         
         if (progressBar) {
