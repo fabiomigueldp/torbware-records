@@ -249,56 +249,71 @@ function handlePartySync(party) {
 
     if (party.mode === 'host') {
         if (party.host_id === userId) {
-            console.log('👑 HOST MODE: Você é o host - NÃO aplicando sync');
+            console.log('👑 HOST MODE: Você é o host - NÃO aplicando sync de controles');
             
-            // Host nunca recebe sync de suas próprias ações
-            // Apenas muda música se necessário
+            // Host NUNCA aplica sync de controles (play/pause/seek) - apenas mudança de música
             if (party.track_id && party.track_id !== getCurrentTrackId()) {
                 console.log('🎵 Host: Mudando música:', party.track_id);
                 loadTrack(party.track_id);
+            } else {
+                console.log('👑 Host: Ignorando completamente sync de controles');
             }
             
             // Host mantém seu próprio interval de sync para os membros
             if (!hostSyncInterval) {
+                console.log('👑 Host: Iniciando interval de sync para membros');
                 hostSyncInterval = setInterval(() => {
-                    if (ws && ws.readyState === WebSocket.OPEN && !isSyncing) {
+                    if (ws && ws.readyState === WebSocket.OPEN && !isSyncing && player) {
                         sendMessage('sync_update', {
                             currentTime: player.currentTime,
-                            is_playing: !player.paused
+                            is_playing: !player.paused,
+                            track_id: getCurrentTrackId()
                         });
                     }
                 }, 1000);
             }
         } else {
-            console.log('👥 HOST MODE: Você é membro - aplicando sync do host');
-            // Check if we have a recent action to avoid conflict with sync
-            const hasRecentAction = (Date.now() - lastPlayerAction) < 2000; // 2 second protection
+            console.log('👥 HOST MODE: Você é membro - verificando se deve aplicar sync');
+            
+            // Check if we have a very recent action to avoid conflict with sync
+            const timeSinceAction = Date.now() - lastPlayerAction;
+            const hasRecentAction = timeSinceAction < 3000; // 3 second protection for members
+            
+            console.log(`👥 Time since last action: ${timeSinceAction}ms, hasRecentAction: ${hasRecentAction}`);
             
             if (hasRecentAction) {
-                console.log('👥 HOST MODE: Ignorando sync - ação recente do usuário');
+                console.log('👥 HOST MODE: Ignorando sync - ação muito recente do membro');
                 
+                // Only change track if different
                 if (party.track_id && party.track_id !== getCurrentTrackId()) {
-                    console.log('🎵 Host membro: Mudando música');
+                    console.log('🎵 Membro: Mudando música apenas');
                     loadTrack(party.track_id);
                 }
             } else {
+                console.log('👥 HOST MODE: Aplicando sync do host');
                 applySyncUpdate(party, false);
             }
             
+            // Members don't need sync interval
             if (hostSyncInterval) {
                 clearInterval(hostSyncInterval);
                 hostSyncInterval = null;
             }
         }
     } else if (party.mode === 'democratic') {
-        const currentDebounce = democraticDebounceTime;
-        const hasRecentAction = (Date.now() - lastPlayerAction) < currentDebounce * 3;
+        console.log('🗳️ DEMOCRATIC MODE: Verificando se deve aplicar sync');
+        
+        const timeSinceAction = Date.now() - lastPlayerAction;
+        const hasRecentAction = timeSinceAction < (democraticDebounceTime * 2);
+        
+        console.log(`🗳️ Time since last action: ${timeSinceAction}ms, hasRecentAction: ${hasRecentAction}`);
         
         if (hasRecentAction) {
             console.log('🗳️ DEMOCRATIC MODE: Ignorando sync - debounce ativo');
             
+            // Only change track if different
             if (party.track_id && party.track_id !== getCurrentTrackId()) {
-                console.log('🎵 Democrático: Mudando música');
+                console.log('🎵 Democrático: Mudando música apenas');
                 loadTrack(party.track_id);
             }
         } else {
@@ -306,6 +321,7 @@ function handlePartySync(party) {
             applySyncUpdate(party, true);
         }
         
+        // Democratic mode doesn't need host sync interval
         if (hostSyncInterval) {
             clearInterval(hostSyncInterval);
             hostSyncInterval = null;
@@ -567,6 +583,14 @@ function renderCurrentParty(party) {
     if (partyCreatedTime) partyCreatedTime.textContent = new Date().toLocaleString();
 
     const canControl = isHost || party.mode === 'democratic';
+    console.log('🎮 renderCurrentParty - Determinando controle:', {
+        isHost,
+        partyMode: party.mode,
+        canControl,
+        userId,
+        hostId: party.host_id
+    });
+    
     updatePlayerControls(canControl);
     updatePlayerStatus(isHost ? 'host' : (party.mode === 'democratic' ? 'democratic' : 'member'));
 }
@@ -1582,25 +1606,133 @@ function setupEventListeners() {
     // Player Control Buttons
     if (playPauseBtn) {
         playPauseBtn.addEventListener('click', () => {
-            if (player.paused) {
-                player.play();
+            console.log('🎮 Play/Pause button clicked');
+            console.log('🎮 Party state:', { currentPartyId, isHost, currentPartyMode });
+            
+            if (currentPartyId) {
+                // In party mode - check permissions
+                const canControl = isHost || currentPartyMode === 'democratic';
+                console.log('🎮 Control permission check:', { isHost, currentPartyMode, canControl });
+                
+                if (canControl) {
+                    // Mark action timestamp BEFORE sending command
+                    lastPlayerAction = Date.now();
+                    console.log('⏰ lastPlayerAction updated to:', lastPlayerAction);
+                    
+                    const action = player.paused ? 'play' : 'pause';
+                    console.log(`📤 Sending player_action: ${action}`);
+                    
+                    // Apply action immediately for better UX (host should have immediate control)
+                    if (isHost) {
+                        if (player.paused) {
+                            player.play().catch(e => console.warn("Play failed:", e));
+                        } else {
+                            player.pause();
+                        }
+                        console.log(`🎮 Host: Applied ${action} immediately`);
+                    }
+                    
+                    // Send action to server
+                    sendMessage('player_action', { 
+                        action: action,
+                        currentTime: player.currentTime 
+                    });
+                    
+                    const modeText = isHost ? 'host' : 'modo democrático';
+                    showNotification(`${action === 'play' ? 'Reproduzindo' : 'Pausado'} (${modeText})`, 'success');
+                } else {
+                    showNotification('Apenas o host ou membros em modo democrático podem controlar o player', 'warning');
+                    console.log('🚫 Play/Pause blocked: insufficient permissions');
+                }
             } else {
-                player.pause();
+                // Solo mode - direct control
+                lastPlayerAction = Date.now();
+                if (player.paused) {
+                    player.play().catch(e => console.warn("Play failed:", e));
+                    showNotification('Reproduzindo', 'success');
+                } else {
+                    player.pause();
+                    showNotification('Pausado', 'success');
+                }
+                console.log('🎮 Solo mode: Direct control applied');
             }
         });
     }
 
     if (prevBtn) {
         prevBtn.addEventListener('click', () => {
-            // Implement previous track logic
-            player.currentTime = 0;
+            console.log('🎮 Previous button clicked');
+            
+            if (currentPartyId) {
+                const canControl = isHost || currentPartyMode === 'democratic';
+                console.log('🎮 Previous control check:', { isHost, currentPartyMode, canControl });
+                
+                if (canControl) {
+                    lastPlayerAction = Date.now();
+                    
+                    // Go to beginning of current track
+                    if (isHost) {
+                        player.currentTime = 0;
+                        console.log('🎮 Host: Reset to beginning immediately');
+                    }
+                    
+                    sendMessage('player_action', { 
+                        action: 'seek', 
+                        currentTime: 0 
+                    });
+                    
+                    const modeText = isHost ? 'host' : 'modo democrático';
+                    showNotification(`Voltou ao início (${modeText})`, 'success');
+                } else {
+                    showNotification('Apenas o host ou membros em modo democrático podem controlar o player', 'warning');
+                }
+            } else {
+                // Solo mode
+                lastPlayerAction = Date.now();
+                player.currentTime = 0;
+                showNotification('Voltou ao início', 'success');
+            }
         });
     }
 
     if (nextBtn) {
         nextBtn.addEventListener('click', () => {
-            // Implement next track logic
-            showNotification('Próxima música não implementada ainda', 'info');
+            console.log('🎮 Next button clicked');
+            
+            if (currentPartyId) {
+                const canControl = isHost || currentPartyMode === 'democratic';
+                console.log('🎮 Next control check:', { isHost, currentPartyMode, canControl });
+                
+                if (canControl) {
+                    lastPlayerAction = Date.now();
+                    
+                    // For now, just skip to end of track
+                    const newTime = player.duration ? player.duration - 1 : 0;
+                    if (isHost && player.duration) {
+                        player.currentTime = newTime;
+                        console.log('🎮 Host: Skip to end immediately');
+                    }
+                    
+                    sendMessage('player_action', { 
+                        action: 'seek', 
+                        currentTime: newTime 
+                    });
+                    
+                    const modeText = isHost ? 'host' : 'modo democrático';
+                    showNotification(`Avançou para o final (${modeText})`, 'success');
+                } else {
+                    showNotification('Apenas o host ou membros em modo democrático podem controlar o player', 'warning');
+                }
+            } else {
+                // Solo mode
+                lastPlayerAction = Date.now();
+                if (player.duration) {
+                    player.currentTime = player.duration - 1;
+                    showNotification('Avançou para o final', 'success');
+                } else {
+                    showNotification('Próxima música não implementada ainda', 'info');
+                }
+            }
         });
     }
 
